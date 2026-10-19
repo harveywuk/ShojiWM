@@ -909,6 +909,7 @@ impl ShojiWM {
         let output_name = pointer_position.and_then(|position| self.output_at_point(position)).map(|output| output.name());
         let event = crate::ssd::GesturePinchEventSnapshot {
             phase,
+            modifiers: self.input_grab_modifiers(),
             fingers: self.runtime_gesture_pinch_fingers,
             scale,
             rotation,
@@ -2259,6 +2260,7 @@ impl ShojiWM {
                 });
                 self.dispatch_gesture_swipe_events(GestureSwipeEventSnapshot {
                     phase: GestureSwipePhaseSnapshot::Begin,
+                    modifiers: self.input_grab_modifiers(),
                     fingers,
                     position,
                     delta_x: 0.0,
@@ -2319,6 +2321,7 @@ impl ShojiWM {
                 let velocity_y = gesture.velocity_y;
                 self.dispatch_gesture_swipe_events(GestureSwipeEventSnapshot {
                     phase: GestureSwipePhaseSnapshot::Update,
+                    modifiers: self.input_grab_modifiers(),
                     fingers,
                     position,
                     delta_x,
@@ -2370,6 +2373,7 @@ impl ShojiWM {
                     } else {
                         GestureSwipePhaseSnapshot::End
                     },
+                    modifiers: self.input_grab_modifiers(),
                     fingers: gesture.fingers,
                     position,
                     delta_x: 0.0,

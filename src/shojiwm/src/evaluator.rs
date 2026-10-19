@@ -4531,6 +4531,7 @@ COMPOSITOR.event.onWindowResize(() => {});
 
         let gesture = GestureSwipeEventSnapshot {
             phase: GestureSwipePhaseSnapshot::Update,
+            modifiers: Default::default(),
             fingers: 3,
             position: Some(pointer.position),
             delta_x: 2.0,
@@ -5468,6 +5469,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
                      timestamp: u64| {
             GestureSwipeEventSnapshot {
                 phase,
+                modifiers: Default::default(),
                 fingers: 3,
                 position: None,
                 delta_x,
@@ -5643,6 +5645,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             let delta_x = if phase == GestureSwipePhaseSnapshot::Update { 15.0 } else { 0.0 };
             GestureSwipeEventSnapshot {
                 phase,
+                modifiers: Default::default(),
                 fingers: 3,
                 position: None,
                 delta_x,
@@ -5754,6 +5757,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
                      timestamp: u64| {
             GestureSwipeEventSnapshot {
                 phase,
+                modifiers: Default::default(),
                 fingers: 3,
                 position: None,
                 delta_x,
@@ -5859,6 +5863,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
                      timestamp: u64| {
             GestureSwipeEventSnapshot {
                 phase,
+                modifiers: Default::default(),
                 fingers: 3,
                 position: None,
                 delta_x,
@@ -5966,6 +5971,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
                      timestamp: u64| {
             GestureSwipeEventSnapshot {
                 phase,
+                modifiers: Default::default(),
                 fingers: 3,
                 position: None,
                 delta_x,
@@ -6087,6 +6093,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
                      timestamp: u64| {
             GestureSwipeEventSnapshot {
                 phase,
+                modifiers: Default::default(),
                 fingers: 3,
                 position: None,
                 delta_x,

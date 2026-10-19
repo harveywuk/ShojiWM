@@ -178,7 +178,7 @@ pub struct WindowResizePointSnapshot {
     pub y: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PointerModifierStateSnapshot {
     #[serde(rename = "super")]
@@ -225,6 +225,8 @@ pub struct PointerMoveEventSnapshot {
 pub struct GestureSwipeEventSnapshot {
     pub phase: GestureSwipePhaseSnapshot,
     pub fingers: u32,
+    /// The keyboard modifiers held (Hyprland's gesture `mods`).
+    pub modifiers: PointerModifierStateSnapshot,
     pub position: Option<PointerMovePointSnapshot>,
     pub delta_x: f64,
     pub delta_y: f64,
@@ -245,6 +247,8 @@ pub struct GestureSwipeEventSnapshot {
 pub struct GesturePinchEventSnapshot {
     pub phase: GestureSwipePhaseSnapshot,
     pub fingers: u32,
+    /// The keyboard modifiers held.
+    pub modifiers: PointerModifierStateSnapshot,
     pub scale: f64,
     pub rotation: f64,
     pub delta_x: f64,
