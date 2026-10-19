@@ -59,6 +59,9 @@ pub struct CachedDecorationLabel {
     /// The node's opacity (its ancestors' included), applied when drawn so
     /// a fade does not rasterize the text again at every step.
     pub opacity: f32,
+    /// The blur the pixels were rasterized with; negative while another
+    /// blur's raster stands in for the one asked for.
+    pub blur: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +88,9 @@ pub struct LabelSpec {
     /// Exact rasterization scale (the layout scale), so the buffer maps
     /// one-to-one onto the node's physical pixels.
     pub raster_scale: f64,
+    /// The `blur` style (logical px). When set, `rect` is the label's rect
+    /// grown by [`blur::padding`] on every side, the text laid out inside.
+    pub blur: f32,
 }
 
 #[derive(Debug)]
@@ -95,6 +101,11 @@ pub struct TextRasterizer {
     async_buffers: HashMap<u64, TimedTextBuffer>,
     async_in_flight: HashSet<u64>,
     async_missing: HashSet<u64>,
+    /// Blurred labels being rasterized: their spec hash, and the hash of the
+    /// same label at any blur.
+    blur_family: HashMap<u64, u64>,
+    /// The latest raster made for a blurred label, by that family hash.
+    blur_latest: HashMap<u64, u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -118,14 +129,32 @@ impl TextRasterizer {
             async_buffers: HashMap::new(),
             async_in_flight: HashSet::new(),
             async_missing: HashSet::new(),
+            blur_family: HashMap::new(),
+            blur_latest: HashMap::new(),
         }
     }
 
     pub fn render_label(&mut self, spec: &LabelSpec) -> Option<CachedDecorationLabel> {
         self.prune_async_buffers();
         let spec_hash = hash_label_spec(spec);
-        if let Some(cached) = self.async_buffers.get_mut(&spec_hash) {
+        let ready = self.async_buffers.contains_key(&spec_hash);
+        // A blur that animates asks for a new raster every frame, each out
+        // of date by the time it is made: until this one is, the label's
+        // latest blurred raster (the same size) stands in.
+        let family = (spec.blur > 0.0).then(|| hash_label_spec(&LabelSpec { blur: 1.0, ..spec.clone() }));
+        let shown = if ready {
+            Some(spec_hash)
+        } else {
+            family.and_then(|family| self.blur_latest.get(&family).copied())
+        };
+        if !ready && let Some(family) = family {
+            self.blur_family.insert(spec_hash, family);
+        }
+        if let Some(cached) = shown.and_then(|hash| self.async_buffers.get_mut(&hash)) {
             cached.last_used_at = Instant::now();
+            if !ready && self.async_in_flight.insert(spec_hash) && let Some(sender) = &self.async_job_sender {
+                let _ = sender.send(AsyncAssetJob::Text { spec_hash, spec: spec.clone() });
+            }
             return Some(CachedDecorationLabel {
                 owner_node_id: None,
                 stable_key: String::new(),
@@ -143,6 +172,7 @@ impl TextRasterizer {
                 color: spec.color,
                 buffer: cached.buffer.clone(),
                 opacity: 1.0,
+                blur: if ready { spec.blur } else { -1.0 },
             });
         }
 
@@ -176,6 +206,7 @@ impl TextRasterizer {
             text: spec.text.clone(),
             color: spec.color,
             opacity: 1.0,
+            blur: spec.blur,
             buffer: MemoryRenderBuffer::from_slice(
                 &rendered.pixels,
                 Fourcc::Argb8888,
@@ -203,8 +234,12 @@ impl TextRasterizer {
             .map(|rect| rect.height)
             .unwrap_or(spec.rect.height as f32)
             .max(0.0);
-        let target_width = (logical_width * raster_scale as f32).round().max(1.0) as i32;
-        let target_height = (logical_height * raster_scale as f32).round().max(1.0) as i32;
+        let full_width = (logical_width * raster_scale as f32).round().max(1.0) as i32;
+        let full_height = (logical_height * raster_scale as f32).round().max(1.0) as i32;
+        // A blurred label is rasterized with room around it for the blur.
+        let pad = (crate::backend::blur::padding(spec.blur) as f32 * raster_scale).round() as i32;
+        let target_width = (full_width - 2 * pad).max(1);
+        let target_height = (full_height - 2 * pad).max(1);
         let font_size = spec.font_size.max(1.0) * raster_scale as f32;
         let line_height =
             spec.line_height.unwrap_or(spec.font_size.max(1.0) + 4.0) * raster_scale as f32;
@@ -241,7 +276,7 @@ impl TextRasterizer {
             .fold(0.0f32, f32::max);
         let y_offset = ((target_height as f32 - text_height) * 0.5).max(0.0);
 
-        let mut pixels = vec![0u8; (target_width * target_height * 4) as usize];
+        let mut pixels = vec![0u8; (full_width * full_height * 4) as usize];
         let text_color = CosmicColor::rgba(spec.color.r, spec.color.g, spec.color.b, spec.color.a);
         {
             let mut buffer = buffer.borrow_with(&mut self.font_system);
@@ -253,15 +288,16 @@ impl TextRasterizer {
                         if px < 0 || py < 0 || px >= target_width || py >= target_height {
                             continue;
                         }
-                        blend_pixel(&mut pixels, target_width, px, py, color.as_rgba_tuple());
+                        blend_pixel(&mut pixels, full_width, px + pad, py + pad, color.as_rgba_tuple());
                     }
                 }
             });
         }
+        crate::backend::blur::blur_premultiplied(&mut pixels, full_width, full_height, spec.blur * raster_scale);
 
         Some(RenderedLabelPixels {
-            width: target_width,
-            height: target_height,
+            width: full_width,
+            height: full_height,
             pixels,
         })
     }
@@ -275,6 +311,9 @@ impl TextRasterizer {
     ) {
         self.async_in_flight.remove(&spec_hash);
         self.async_missing.remove(&spec_hash);
+        if let Some(family) = self.blur_family.remove(&spec_hash) {
+            self.blur_latest.insert(family, spec_hash);
+        }
         self.async_buffers.insert(
             spec_hash,
             TimedTextBuffer {
@@ -301,6 +340,10 @@ impl TextRasterizer {
         let now = Instant::now();
         self.async_buffers
             .retain(|_, entry| now.duration_since(entry.last_used_at) <= TTL);
+        let buffers = &self.async_buffers;
+        self.blur_latest.retain(|_, latest| buffers.contains_key(latest));
+        let in_flight = &self.async_in_flight;
+        self.blur_family.retain(|hash, _| in_flight.contains(hash));
     }
 }
 
@@ -402,6 +445,7 @@ pub fn hash_label_spec(spec: &LabelSpec) -> u64 {
     spec.text_align.hash(&mut hasher);
     spec.text_overflow.hash(&mut hasher);
     spec.line_height.map(f32::to_bits).hash(&mut hasher);
+    spec.blur.to_bits().hash(&mut hasher);
     spec.raster_scale.to_bits().hash(&mut hasher);
     spec.font_family.hash(&mut hasher);
     spec.font_weight

@@ -224,6 +224,9 @@ style_fields! {
     background: Color,
     color: Color,
     opacity: f32,
+    /// Blurs the node's text and images, and everything inside it, by this
+    /// standard deviation in logical px (nested blurs combine).
+    blur: f64,
     /// Border on all four sides.
     border_all: Border,
     border_top: Border,
@@ -347,6 +350,7 @@ impl Style {
             background: read(&self.background),
             color: read(&self.color),
             opacity: read(&self.opacity),
+            blur: read(&self.blur).map(|blur| blur as f32),
             border: read(&self.border_all).map(Into::into),
             border_top: read(&self.border_top).map(Into::into),
             border_right: read(&self.border_right).map(Into::into),

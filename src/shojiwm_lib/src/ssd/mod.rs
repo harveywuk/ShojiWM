@@ -1480,6 +1480,10 @@ pub struct DecorationStyle {
     pub background: Option<Color>,
     pub color: Option<Color>,
     pub opacity: Option<f32>,
+    /// Standard deviation (logical px) of a blur of the node's text and
+    /// images and everything inside it; layout makes it the node's own
+    /// combined with its ancestors'.
+    pub blur: Option<f32>,
     pub border: Option<BorderStyle>,
     pub border_top: Option<BorderStyle>,
     pub border_right: Option<BorderStyle>,
@@ -2096,20 +2100,26 @@ pub(super) fn layout_node_with_scale(
         round_half_up(rect.height as f64 * frame.scale) + root_extra_px.1,
     );
     let mut root = layout_node_resolved(node, root_rect, None, window_slot_size, frame, root_rect)?;
-    inherit_opacity(&mut root, 1.0);
+    inherit_group_style(&mut root, 1.0, 0.0);
     Ok(root)
 }
 
-/// Opacity applies to a node and everything inside it: each node paints
-/// with its own style only, so a node's opacity becomes its own times its
-/// ancestors' (text and icons in a fading container fade with it).
-fn inherit_opacity(node: &mut ComputedDecorationNode, parent: f32) {
-    let effective = node.style.opacity.unwrap_or(1.0).clamp(0.0, 1.0) * parent;
-    if node.style.opacity.is_some() || parent < 1.0 {
+/// Opacity and blur apply to a node and everything inside it, but each node
+/// paints with its own style only: so a node's opacity becomes its own times
+/// its ancestors' (text and icons in a fading container fade with it), and
+/// its blur its own combined with theirs (as Gaussians combine).
+fn inherit_group_style(node: &mut ComputedDecorationNode, opacity: f32, blur: f32) {
+    let effective = node.style.opacity.unwrap_or(1.0).clamp(0.0, 1.0) * opacity;
+    if node.style.opacity.is_some() || opacity < 1.0 {
         node.style.opacity = Some(effective);
     }
+    let own = node.style.blur.unwrap_or(0.0).max(0.0);
+    let blurred = (own * own + blur * blur).sqrt();
+    if node.style.blur.is_some() || blur > 0.0 {
+        node.style.blur = Some(blurred);
+    }
     for child in &mut node.children {
-        inherit_opacity(child, effective);
+        inherit_group_style(child, effective, blurred);
     }
 }
 
@@ -2236,7 +2246,7 @@ pub(super) fn reapply_tree_preserving_layout(
     inherited_clip: Option<ResolvedDecorationClip>,
 ) {
     reapply_node_preserving_layout(computed, node, inherited_clip);
-    inherit_opacity(computed, 1.0);
+    inherit_group_style(computed, 1.0, 0.0);
 }
 
 fn reapply_node_preserving_layout(
@@ -2842,6 +2852,7 @@ impl DecorationNode {
                     text_overflow: None,
                     line_height: Some(line_height),
                     raster_scale: 1.0,
+                    blur: 0.0,
                 };
                 let (width, height) = measure_label_intrinsic(&spec);
                 Some((

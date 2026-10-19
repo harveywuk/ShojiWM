@@ -6967,9 +6967,12 @@ fn collect_retargeted_text_buffers(
         .stable_id
         .as_deref()
         .and_then(|stable_id| node_geometry.node_geometry(stable_id));
-    let rect_precise = shared_geometry
-        .map(|geometry| geometry.rect_precise)
-        .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect));
+    let (grow, grow_precise) = blur_growth(crate::backend::blur::quantize(node.style.blur.unwrap_or(0.0)));
+    let rect_precise = grow_precise(
+        shared_geometry
+            .map(|geometry| geometry.rect_precise)
+            .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
+    );
     let clip_rect_precise = shared_geometry
         .and_then(|geometry| geometry.clip_rect_precise)
         .or_else(|| {
@@ -6983,12 +6986,13 @@ fn collect_retargeted_text_buffers(
     buffer.owner_node_id = node.stable_id.clone();
     buffer.stable_key = stable_key.clone();
     buffer.order = *order_map.get(&stable_key).unwrap_or(&usize::MAX);
-    buffer.rect = node.rect;
+    buffer.rect = grow(node.rect);
     buffer.rect_precise = Some(rect_precise);
     buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
     buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
     buffer.clip_rect_precise = clip_rect_precise;
     buffer.clip_radius_precise = clip_radius_precise;
+    buffer.opacity = node.style.opacity.unwrap_or(1.0);
     // Retargeting moves existing pixels; it does not rasterize new text or
     // ink. Keep their metadata truthful so a later raster check can detect
     // a pending content/appearance change instead of accepting stale pixels.
@@ -7056,9 +7060,12 @@ fn collect_retargeted_icon_buffers(
         .stable_id
         .as_deref()
         .and_then(|stable_id| node_geometry.node_geometry(stable_id));
-    let rect_precise = shared_geometry
-        .map(|geometry| geometry.rect_precise)
-        .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect));
+    let (grow, grow_precise) = blur_growth(crate::backend::blur::quantize(node.style.blur.unwrap_or(0.0)));
+    let rect_precise = grow_precise(
+        shared_geometry
+            .map(|geometry| geometry.rect_precise)
+            .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
+    );
     let clip_rect_precise = shared_geometry
         .and_then(|geometry| geometry.clip_rect_precise)
         .or_else(|| {
@@ -7072,12 +7079,13 @@ fn collect_retargeted_icon_buffers(
     buffer.owner_node_id = node.stable_id.clone();
     buffer.stable_key = stable_key.clone();
     buffer.order = *order_map.get(&stable_key).unwrap_or(&usize::MAX);
-    buffer.rect = node.rect;
+    buffer.rect = grow(node.rect);
     buffer.rect_precise = Some(rect_precise);
     buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
     buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
     buffer.clip_rect_precise = clip_rect_precise;
     buffer.clip_radius_precise = clip_radius_precise;
+    buffer.opacity = node.style.opacity.unwrap_or(1.0);
 
     if matches!(&node.kind, super::DecorationNodeKind::AppIcon(icon) if icon.fallback.is_none())
         && snapshot.icon.is_none()
@@ -7319,6 +7327,25 @@ fn is_descendant_node_id(node_id: &str, ancestor_id: &str) -> bool {
     node_id.len() > ancestor_id.len()
         && node_id.starts_with(ancestor_id)
         && matches!(node_id.as_bytes()[ancestor_id.len()], b'.' | b'/')
+}
+
+/// Rects grown by the reach of a `blur` (logical px), for a blurred label
+/// or icon rasterized with room for its blur.
+fn blur_growth(
+    blur: f32,
+) -> (impl Fn(LogicalRect) -> LogicalRect, impl Fn(PreciseLogicalRect) -> PreciseLogicalRect) {
+    let pad = crate::backend::blur::padding(blur);
+    (
+        move |rect: LogicalRect| {
+            LogicalRect::new(rect.x - pad, rect.y - pad, rect.width + 2 * pad, rect.height + 2 * pad)
+        },
+        move |rect: PreciseLogicalRect| PreciseLogicalRect {
+            x: rect.x - pad as f32,
+            y: rect.y - pad as f32,
+            width: rect.width + 2.0 * pad as f32,
+            height: rect.height + 2.0 * pad as f32,
+        },
+    )
 }
 
 fn node_id_matches_dirty_scope(
@@ -7591,14 +7618,17 @@ fn collect_text_buffers(
     if color.a == 0 {
         return;
     }
+    // A blurred label is drawn over its rect grown by the blur's reach.
+    let blur = crate::backend::blur::quantize(node.style.blur.unwrap_or(0.0));
+    let (grow, grow_precise) = blur_growth(blur);
 
     let spec = LabelSpec {
-        rect: node.rect,
-        rect_precise: Some(
+        rect: grow(node.rect),
+        rect_precise: Some(grow_precise(
             shared_geometry
                 .map(|geometry| geometry.rect_precise)
                 .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
-        ),
+        )),
         text: label.text.clone(),
         // Opacity is applied when drawn (`opacity` below): baked into the
         // colour, every step of a fade would rasterize the text again.
@@ -7610,13 +7640,16 @@ fn collect_text_buffers(
         text_overflow: node.style.text_overflow.clone(),
         line_height: node.style.line_height.map(|value| value as f32),
         raster_scale,
+        blur,
     };
 
     let stable_key = format!("{path}:label");
     let order = *order_map.get(&stable_key).unwrap_or(&usize::MAX);
-    let current_rect_precise = shared_geometry
-        .map(|geometry| geometry.rect_precise)
-        .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect));
+    let current_rect_precise = grow_precise(
+        shared_geometry
+            .map(|geometry| geometry.rect_precise)
+            .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
+    );
     let current_clip_rect_precise = shared_geometry
         .and_then(|geometry| geometry.clip_rect_precise)
         .or_else(|| {
@@ -7677,7 +7710,19 @@ fn collect_text_buffers(
         buffer.owner_node_id = node.stable_id.clone();
         buffer.stable_key = stable_key;
         buffer.order = order;
-        buffer.rect = spec.rect;
+        // Pixels made for another blur are a different size (its padding):
+        // centre them on the label rather than stretch them.
+        let (dx, dy) = (
+            (buffer.rendered_rect.width - spec.rect.width) / 2,
+            (buffer.rendered_rect.height - spec.rect.height) / 2,
+        );
+        let current_rect_precise = PreciseLogicalRect {
+            x: current_rect_precise.x - dx as f32,
+            y: current_rect_precise.y - dy as f32,
+            width: current_rect_precise.width + 2.0 * dx as f32,
+            height: current_rect_precise.height + 2.0 * dy as f32,
+        };
+        buffer.rect = LogicalRect::new(spec.rect.x - dx, spec.rect.y - dy, spec.rect.width + 2 * dx, spec.rect.height + 2 * dy);
         buffer.rect_precise = Some(current_rect_precise);
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
@@ -7778,11 +7823,8 @@ fn text_buffers_need_raster_for_node(
 
     let stable_key = format!("{path}:label");
     let previous_buffer = fallback_text_buffer(previous, node.stable_id.as_deref(), &stable_key);
-    let color = node
-        .style
-        .color
-        .unwrap_or(super::Color::WHITE)
-        .with_opacity(node.style.opacity);
+    // Opacity is applied when drawn, not rasterized.
+    let color = node.style.color.unwrap_or(super::Color::WHITE);
     let expects_no_buffer =
         label.text.is_empty() || node.rect.width <= 0 || node.rect.height <= 0 || color.a == 0;
     if expects_no_buffer {
@@ -7797,18 +7839,24 @@ fn text_buffers_need_raster_for_node(
         .stable_id
         .as_deref()
         .and_then(|stable_id| node_geometry.node_geometry(stable_id));
-    let rect_precise = shared_geometry
-        .map(|geometry| geometry.rect_precise)
-        .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect));
+    let blur = crate::backend::blur::quantize(node.style.blur.unwrap_or(0.0));
+    let (grow, grow_precise) = blur_growth(blur);
+    let rect = grow(node.rect);
+    let rect_precise = grow_precise(
+        shared_geometry
+            .map(|geometry| geometry.rect_precise)
+            .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
+    );
     let previous_rect_precise = previous_buffer
         .rendered_rect_precise
         .unwrap_or_else(|| precise_rect_from_logical(previous_buffer.rendered_rect));
 
     previous_buffer.text != label.text
         || previous_buffer.color != color
+        || previous_buffer.blur != blur
         || previous_buffer.raster_scale != raster_scale
-        || previous_buffer.rendered_rect.width != node.rect.width
-        || previous_buffer.rendered_rect.height != node.rect.height
+        || previous_buffer.rendered_rect.width != rect.width
+        || previous_buffer.rendered_rect.height != rect.height
         || (previous_rect_precise.width - rect_precise.width).abs() > 0.001
         || (previous_rect_precise.height - rect_precise.height).abs() > 0.001
 }
@@ -7862,20 +7910,25 @@ fn collect_icon_buffers(
         .stable_id
         .as_deref()
         .and_then(|stable_id| node_geometry.node_geometry(stable_id));
+    // A blurred icon is drawn over its rect grown by the blur's reach.
+    let blur = crate::backend::blur::quantize(node.style.blur.unwrap_or(0.0));
+    let (grow, grow_precise) = blur_growth(blur);
+    let rect_precise = grow_precise(
+        shared_geometry
+            .map(|geometry| geometry.rect_precise)
+            .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
+    );
 
     let spec = IconSpec {
-        rect: node.rect,
-        rect_precise: Some(
-            shared_geometry
-                .map(|geometry| geometry.rect_precise)
-                .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
-        ),
+        rect: grow(node.rect),
+        rect_precise: Some(rect_precise),
         icon: source.icon.cloned(),
         app_id: source.app_id.map(str::to_owned),
         asset_path,
         image_fit,
         fallback_asset_path,
         raster_scale,
+        blur,
     };
 
     if let Some(buffer) = rasterizer.render_icon(&spec) {
@@ -7885,11 +7938,7 @@ fn collect_icon_buffers(
         buffer.order = *order_map
             .get(&format!("{path}:icon"))
             .unwrap_or(&usize::MAX);
-        buffer.rect_precise = Some(
-            shared_geometry
-                .map(|geometry| geometry.rect_precise)
-                .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
-        );
+        buffer.rect_precise = Some(rect_precise);
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
         buffer.clip_rect_precise = shared_geometry

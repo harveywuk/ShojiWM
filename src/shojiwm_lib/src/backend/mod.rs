@@ -1,4 +1,5 @@
 pub mod async_assets;
+pub mod blur;
 pub mod clipped_memory;
 pub mod clipped_surface;
 pub mod composition;

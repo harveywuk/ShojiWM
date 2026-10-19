@@ -381,6 +381,7 @@ pub struct WireStyle {
     pub background: Option<String>,
     pub color: Option<String>,
     pub opacity: Option<f32>,
+    pub blur: Option<f32>,
     pub border: Option<WireBorderValue>,
     pub border_top: Option<WireBorderValue>,
     pub border_right: Option<WireBorderValue>,
@@ -1290,6 +1291,7 @@ impl TryFrom<WireStyle> for DecorationStyle {
             background: value.background.map(|s| parse_color(&s)).transpose()?,
             color: value.color.map(|s| parse_color(&s)).transpose()?,
             opacity: value.opacity,
+            blur: value.blur,
             border: value
                 .border
                 .map(parse_border)
