@@ -273,7 +273,7 @@ impl ShojiWM {
     }
 
     /// Run a decoration's runtime handler; whether the config had one.
-    fn invoke_decoration_handler(&mut self, window: &Window, handler_id: &str) -> bool {
+    pub(crate) fn invoke_decoration_handler(&mut self, window: &Window, handler_id: &str) -> bool {
         let window_id = self.snapshot_window(window).id;
         let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
         self.sync_runtime_display_state();

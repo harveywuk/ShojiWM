@@ -585,6 +585,18 @@ macro_rules! mutation_reply {
 }
 
 fn invoke_handler(window_id: &str, handler_id: &str) -> DecorationHandlerInvocation {
+    // "{node}#drop:{lines}": what was dropped goes alongside the handler.
+    if let Some((node, payload)) = handler_id.split_once("#drop:") {
+        let lines: Vec<String> = payload.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).map(str::to_owned).collect();
+        crate::view::DROPPED.with(|dropped| *dropped.borrow_mut() = lines);
+        let handler = runtime::window_entry(window_id).and_then(|entry| entry.context.handlers.borrow().get(&format!("{node}#drop")).cloned());
+        return handler_invocation(handler.is_some_and(|handler| {
+            batch(|| handler());
+            true
+        }));
+    }
+    // A node that takes drops: its click handler without the marker.
+    let handler_id = handler_id.strip_suffix(shojiwm_lib::dnd::DROP_SUFFIX).unwrap_or(handler_id);
     // "{node}#scroll:{payload}": the event goes alongside the handler.
     let (handler_id, scroll) = match handler_id.split_once("#scroll:") {
         Some((node, payload)) => (format!("{node}#scroll"), crate::view::ScrollEvent::parse(payload)),

@@ -145,6 +145,8 @@ pub mod prelude {
 }
 
 pub use shojiwm_lib::run;
+/// Frames a second an output presents (see the fps counter).
+pub use shojiwm_lib::backend::fps_counter::present_rate as output_present_rate;
 pub use shojiwm_lib::runtime_api::{self, *};
 /// Data types a config reads (snapshots) and builds (decoration trees,
 /// effect configs).

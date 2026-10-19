@@ -196,6 +196,8 @@ impl ScrollEvent {
 }
 
 thread_local! {
+    /// What was dropped, for an `on_drop` handler.
+    pub(crate) static DROPPED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The scroll being delivered to an `on_scroll` handler.
     pub(crate) static SCROLL: std::cell::RefCell<Option<ScrollEvent>> = const { std::cell::RefCell::new(None) };
 }
@@ -209,6 +211,7 @@ pub struct Element {
     on_click: Option<ClickAction>,
     on_secondary_click: Option<Rc<dyn Fn()>>,
     on_scroll: Option<Rc<dyn Fn(&ScrollEvent)>>,
+    on_drop: Option<Rc<dyn Fn(&[String])>>,
     on_hover_change: Option<Rc<dyn Fn(bool)>>,
     on_active_change: Option<Rc<dyn Fn(bool)>>,
     paint: Option<Box<PaintShader>>,
@@ -225,6 +228,7 @@ impl Element {
             on_click: None,
             on_secondary_click: None,
             on_scroll: None,
+            on_drop: None,
             on_hover_change: None,
             on_active_change: None,
             paint: None,
@@ -468,6 +472,14 @@ impl Element {
     /// lift.
     pub fn on_scroll(mut self, f: impl Fn(&ScrollEvent) + 'static) -> Self {
         self.on_scroll = Some(Rc::new(f));
+        self
+    }
+
+    /// Take what is dropped on this node (a [`Button`]): the dragged data's
+    /// lines, `file://` links for files. The compositor asks for a copy, so
+    /// the source keeps its files.
+    pub fn on_drop(mut self, f: impl Fn(&[String]) + 'static) -> Self {
+        self.on_drop = Some(Rc::new(f));
         self
     }
 
@@ -1026,6 +1038,16 @@ impl MountedNode {
         if let Some(handler) = &element.on_secondary_click {
             context.register_handler(format!("{id}#secondary"), handler.clone());
         }
+        if let Some(handler) = &element.on_drop {
+            let handler = handler.clone();
+            context.register_handler(
+                format!("{id}#drop"),
+                Rc::new(move || {
+                    let lines = DROPPED.with(|dropped| dropped.borrow().clone());
+                    handler(&lines);
+                }),
+            );
+        }
         if let Some(handler) = &element.on_scroll {
             let handler = handler.clone();
             context.register_handler(
@@ -1177,8 +1199,15 @@ impl MountedNode {
                 ElementKind::Button => DecorationNodeKind::Button(ButtonNode {
                     action: match &element.on_click {
                         Some(ClickAction::Window(action)) => action.clone(),
-                        Some(ClickAction::Handler(_)) => WindowAction::RuntimeHandler(format!("{id}#click")),
-                        None => WindowAction::RuntimeHandler(format!("{id}#none")),
+                        // A node that takes drops says so on its id.
+                        Some(ClickAction::Handler(_)) => WindowAction::RuntimeHandler(format!(
+                            "{id}#click{}",
+                            if element.on_drop.is_some() { shojiwm_lib::dnd::DROP_SUFFIX } else { "" }
+                        )),
+                        None => WindowAction::RuntimeHandler(format!(
+                            "{id}#none{}",
+                            if element.on_drop.is_some() { shojiwm_lib::dnd::DROP_SUFFIX } else { "" }
+                        )),
                     },
                 }),
                 ElementKind::AppIcon => DecorationNodeKind::AppIcon(Default::default()),

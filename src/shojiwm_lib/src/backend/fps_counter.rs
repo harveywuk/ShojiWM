@@ -116,6 +116,7 @@ impl FpsCounter {
     /// for that output completes (or after submit) so the measured interval
     /// reflects real refresh cadence.
     pub fn record_present(&mut self, output_name: &str) {
+        record_present_rate(output_name);
         if !self.enabled {
             return;
         }
@@ -371,4 +372,36 @@ fn blend_pixel(pixels: &mut [u8], width: i32, x: i32, y: i32, rgba: (u8, u8, u8,
     pixels[index + 1] = out_g.min(255) as u8;
     pixels[index + 2] = out_r.min(255) as u8;
     pixels[index + 3] = out_a.min(255) as u8;
+}
+
+/// Each output's present rate, kept whether or not the overlay shows, for a
+/// config compiled into the compositor to read (a game's frame rate, when
+/// it is full screen): the last present and the frame time's moving average.
+static PRESENT_RATES: std::sync::Mutex<BTreeMap<String, (Instant, f32)>> = std::sync::Mutex::new(BTreeMap::new());
+
+fn record_present_rate(output_name: &str) {
+    let now = Instant::now();
+    let Ok(mut rates) = PRESENT_RATES.lock() else {
+        return;
+    };
+    match rates.get_mut(output_name) {
+        Some((last, ema)) => {
+            let delta_ms = now.duration_since(*last).as_secs_f32() * 1000.0;
+            if delta_ms > 0.0 && delta_ms < 1000.0 {
+                *ema = if *ema <= 0.0 { delta_ms } else { *ema * (1.0 - FRAME_EMA_ALPHA) + delta_ms * FRAME_EMA_ALPHA };
+            }
+            *last = now;
+        }
+        None => {
+            rates.insert(output_name.to_owned(), (now, 0.0));
+        }
+    }
+}
+
+/// Frames a second `output` presents now: 0 when it has not presented for
+/// a second (nothing is changing), `None` for an output never presented.
+pub fn present_rate(output_name: &str) -> Option<f32> {
+    let rates = PRESENT_RATES.lock().ok()?;
+    let (last, ema) = rates.get(output_name)?;
+    Some(if last.elapsed().as_secs_f32() > 1.0 || *ema <= 0.0 { 0.0 } else { 1000.0 / ema })
 }
