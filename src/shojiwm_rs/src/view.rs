@@ -164,6 +164,42 @@ impl From<Element> for Child {
     }
 }
 
+/// Scrolling over a node with [`Element::on_scroll`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollEvent {
+    /// Logical pixels; positive is right / down.
+    pub delta_x: f64,
+    pub delta_y: f64,
+    /// Wheel clicks × 120, when the device reports them.
+    pub discrete_x: Option<f64>,
+    pub discrete_y: Option<f64>,
+    /// `"wheel"`, `"finger"`, `"continuous"` or `"wheelTilt"`.
+    pub source: String,
+    /// The fingers lifted: a touchpad scroll ended.
+    pub stop: bool,
+}
+
+impl ScrollEvent {
+    /// The payload after `#scroll:` in a scroll handler id:
+    /// `dx:dy:discrete_x:discrete_y:source:stop`.
+    pub(crate) fn parse(payload: &str) -> Option<Self> {
+        let mut parts = payload.split(':');
+        let number = |text: Option<&str>| text.and_then(|text| text.parse::<f64>().ok());
+        let delta_x = number(parts.next())?;
+        let delta_y = number(parts.next())?;
+        let discrete_x = number(parts.next());
+        let discrete_y = number(parts.next());
+        let source = parts.next()?.to_owned();
+        let stop = parts.next()? == "1";
+        Some(Self { delta_x, delta_y, discrete_x, discrete_y, source, stop })
+    }
+}
+
+thread_local! {
+    /// The scroll being delivered to an `on_scroll` handler.
+    pub(crate) static SCROLL: std::cell::RefCell<Option<ScrollEvent>> = const { std::cell::RefCell::new(None) };
+}
+
 /// A decoration node under construction.
 #[derive(Clone)]
 pub struct Element {
@@ -171,6 +207,8 @@ pub struct Element {
     style: Box<Style>,
     key: Option<String>,
     on_click: Option<ClickAction>,
+    on_secondary_click: Option<Rc<dyn Fn()>>,
+    on_scroll: Option<Rc<dyn Fn(&ScrollEvent)>>,
     on_hover_change: Option<Rc<dyn Fn(bool)>>,
     on_active_change: Option<Rc<dyn Fn(bool)>>,
     paint: Option<Box<PaintShader>>,
@@ -185,6 +223,8 @@ impl Element {
             style: Box::default(),
             key: None,
             on_click: None,
+            on_secondary_click: None,
+            on_scroll: None,
             on_hover_change: None,
             on_active_change: None,
             paint: None,
@@ -414,6 +454,20 @@ impl Element {
     /// Let the compositor perform `action` directly on click.
     pub fn on_click_action(mut self, action: WindowAction) -> Self {
         self.on_click = Some(ClickAction::Window(action));
+        self
+    }
+
+    /// Run `f` on a right click. Only [`Button`]s are hit by the pointer.
+    pub fn on_secondary_click(mut self, f: impl Fn() + 'static) -> Self {
+        self.on_secondary_click = Some(Rc::new(f));
+        self
+    }
+
+    /// Take scrolling over this node (a [`Button`]) from the client under
+    /// it: wheel clicks and touchpad scrolls, then a `stop` when the fingers
+    /// lift.
+    pub fn on_scroll(mut self, f: impl Fn(&ScrollEvent) + 'static) -> Self {
+        self.on_scroll = Some(Rc::new(f));
         self
     }
 
@@ -969,6 +1023,20 @@ impl MountedNode {
         if let Some(ClickAction::Handler(handler)) = &element.on_click {
             context.register_handler(format!("{id}#click"), handler.clone());
         }
+        if let Some(handler) = &element.on_secondary_click {
+            context.register_handler(format!("{id}#secondary"), handler.clone());
+        }
+        if let Some(handler) = &element.on_scroll {
+            let handler = handler.clone();
+            context.register_handler(
+                format!("{id}#scroll"),
+                Rc::new(move || {
+                    if let Some(event) = SCROLL.with(|scroll| scroll.borrow().clone()) {
+                        handler(&event);
+                    }
+                }),
+            );
+        }
         if let ElementKind::Popup { popup, callbacks, .. } = &element.kind {
             register_popup_handlers(context, &id, popup, callbacks);
         }
@@ -1460,5 +1528,19 @@ mod tests {
         assert!(!at(2.0, 12, 12) && at(2.0, 22, 22) && at(2.0, 55, 55) && !at(2.0, 65, 65));
         // At 1.5: 15..45.
         assert!(!at(1.5, 12, 12) && at(1.5, 17, 17) && at(1.5, 43, 43) && !at(1.5, 48, 48));
+    }
+}
+
+#[cfg(test)]
+mod scroll_event_tests {
+    use super::ScrollEvent;
+
+    #[test]
+    fn payloads_parse() {
+        let event = ScrollEvent::parse("-12.5:0:-120::finger:0").unwrap();
+        assert_eq!((event.delta_x, event.delta_y, event.discrete_x, event.discrete_y), (-12.5, 0.0, Some(-120.0), None));
+        assert_eq!((event.source.as_str(), event.stop), ("finger", false));
+        assert!(ScrollEvent::parse("0:0:::finger:1").unwrap().stop);
+        assert!(ScrollEvent::parse("x").is_none());
     }
 }

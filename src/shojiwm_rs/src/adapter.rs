@@ -585,8 +585,17 @@ macro_rules! mutation_reply {
 }
 
 fn invoke_handler(window_id: &str, handler_id: &str) -> DecorationHandlerInvocation {
+    // "{node}#scroll:{payload}": the event goes alongside the handler.
+    let (handler_id, scroll) = match handler_id.split_once("#scroll:") {
+        Some((node, payload)) => (format!("{node}#scroll"), crate::view::ScrollEvent::parse(payload)),
+        None => (handler_id.to_owned(), None),
+    };
+    if handler_id.ends_with("#scroll") && scroll.is_none() {
+        return handler_invocation(false);
+    }
+    crate::view::SCROLL.with(|slot| *slot.borrow_mut() = scroll);
     let handler = runtime::window_entry(window_id)
-        .and_then(|entry| entry.context.handlers.borrow().get(handler_id).cloned());
+        .and_then(|entry| entry.context.handlers.borrow().get(&handler_id).cloned());
     let invoked = match handler {
         Some(handler) => {
             batch(|| handler());

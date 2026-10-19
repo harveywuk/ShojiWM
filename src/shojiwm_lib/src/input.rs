@@ -272,6 +272,30 @@ impl ShojiWM {
         }
     }
 
+    /// Run a decoration's runtime handler; whether the config had one.
+    fn invoke_decoration_handler(&mut self, window: &Window, handler_id: &str) -> bool {
+        let window_id = self.snapshot_window(window).id;
+        let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
+        self.sync_runtime_display_state();
+        let Ok(invocation) = self.config_runtime.invoke_handler(&window_id, handler_id, now_ms) else {
+            return false;
+        };
+        self.drain_runtime_host_messages();
+        self.apply_runtime_handler_invocation(window, &invocation);
+        if !invocation.invoked {
+            return false;
+        }
+        self.mark_runtime_dirty_windows(
+            invocation.dirty_window_ids,
+            invocation.dirty_managed_window_ids,
+            &invocation.dirty_window_node_ids,
+        );
+        self.runtime_scheduler_enabled = invocation.next_poll_in_ms.is_some();
+        self.apply_runtime_window_actions(invocation.actions);
+        self.schedule_redraw();
+        true
+    }
+
     fn notify_idle_activity(&mut self) {
         self.refresh_idle_inhibit_state();
         let seat = self.seat.clone();
@@ -1893,30 +1917,16 @@ impl ShojiWM {
                                         time: event.time_msec(),
                                     },
                                 );
-
-                                let window_id = self.snapshot_window(&window).id;
-                                let now_ms =
-                                    std::time::Duration::from(self.clock.now()).as_millis() as u64;
-                                self.sync_runtime_display_state();
-                                if let Ok(invocation) = self.config_runtime.invoke_handler(
-                                    &window_id,
-                                    &handler_id,
-                                    now_ms,
-                                ) {
-                                    self.drain_runtime_host_messages();
-                                    self.apply_runtime_handler_invocation(&window, &invocation);
-
-                                    if invocation.invoked {
-                                        self.mark_runtime_dirty_windows(
-                                            invocation.dirty_window_ids,
-                                            invocation.dirty_managed_window_ids,
-                                            &invocation.dirty_window_node_ids,
-                                        );
-                                        self.runtime_scheduler_enabled =
-                                            invocation.next_poll_in_ms.is_some();
-                                        self.apply_runtime_window_actions(invocation.actions);
-                                        self.schedule_redraw();
-                                    }
+                                // The left button clicks; the right one is a
+                                // secondary click (`on_secondary_click`); the
+                                // others do nothing.
+                                let target = match button {
+                                    272 => Some(handler_id.clone()),
+                                    273 => Some(decoration_handler_variant(&handler_id, "secondary")),
+                                    _ => None,
+                                };
+                                if let Some(target) = target {
+                                    self.invoke_decoration_handler(&window, &target);
                                 }
                             }
                             DecorationHitTestResult::Move => {
@@ -2177,6 +2187,35 @@ impl ShojiWM {
                         timestamp: u64::from(event.time_msec()),
                     });
                     return;
+                }
+
+                // A decoration element that takes scrolling (`on_scroll`)
+                // gets it instead of the client under it.
+                if self.pointer_contents.layer.is_none()
+                    && let Some((window, DecorationHitTestResult::Action(WindowAction::RuntimeHandler(handler_id)))) =
+                        self.decoration_under(pointer.current_location())
+                {
+                    let stop = source == AxisSource::Finger
+                        && event.amount(Axis::Horizontal).unwrap_or(0.0) == 0.0
+                        && event.amount(Axis::Vertical).unwrap_or(0.0) == 0.0;
+                    let optional = |value: Option<f64>| value.map(|value| value.to_string()).unwrap_or_default();
+                    let source_name = match source {
+                        AxisSource::Wheel => "wheel",
+                        AxisSource::Finger => "finger",
+                        AxisSource::Continuous => "continuous",
+                        AxisSource::WheelTilt => "wheelTilt",
+                    };
+                    let target = format!(
+                        "{}:{horizontal_amount}:{vertical_amount}:{}:{}:{source_name}:{}",
+                        decoration_handler_variant(&handler_id, "scroll"),
+                        optional(horizontal_amount_discrete),
+                        optional(vertical_amount_discrete),
+                        u8::from(stop),
+                    );
+                    if self.invoke_decoration_handler(&window, &target) {
+                        let _ = self.display_handle.flush_clients();
+                        return;
+                    }
                 }
 
                 // Mouse-wheel shortcuts use the same configurable runtime
@@ -3782,5 +3821,21 @@ mod pointer_motion_space_tests {
                 "scale {scale} produced a multi-pixel step: {steps:?}"
             );
         }
+    }
+}
+
+/// `"{node}#click"` (or `#none`) as another of the node's handlers:
+/// `"{node}#secondary"`, `"{node}#scroll"`.
+fn decoration_handler_variant(handler_id: &str, kind: &str) -> String {
+    let node = handler_id.rsplit_once('#').map_or(handler_id, |(node, _)| node);
+    format!("{node}#{kind}")
+}
+
+#[cfg(test)]
+mod decoration_handler_tests {
+    #[test]
+    fn variants_keep_the_node() {
+        assert_eq!(super::decoration_handler_variant("w/0.2#click", "secondary"), "w/0.2#secondary");
+        assert_eq!(super::decoration_handler_variant("w/0.2#none", "scroll"), "w/0.2#scroll");
     }
 }

@@ -132,7 +132,7 @@ pub mod prelude {
         style::{Border, FontWeight, Style, Transform2D, hex, inset_shadow, rgba, shadow},
         view::{
             AppIcon, Button, Child, ClientWindow, Composition, Direction, Element, Flex, Image,
-            Label, ManagedTransform, ManagedWindow, Popup, PopupTrigger, Rect, ShaderEffect, WindowBorder,
+            Label, ManagedTransform, ManagedWindow, Popup, PopupTrigger, Rect, ScrollEvent, ShaderEffect, WindowBorder,
         },
         window::{AnimationMode, ManagedAnimation, Window, WindowStateKey},
         window_stack::{Placement, WindowStack},
