@@ -6954,7 +6954,7 @@ fn collect_retargeted_text_buffers(
         );
     });
 
-    let super::DecorationNodeKind::Label(label) = &node.kind else {
+    let super::DecorationNodeKind::Label(_) = &node.kind else {
         return;
     };
 
@@ -6989,12 +6989,9 @@ fn collect_retargeted_text_buffers(
     buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
     buffer.clip_rect_precise = clip_rect_precise;
     buffer.clip_radius_precise = clip_radius_precise;
-    buffer.text = label.text.clone();
-    buffer.color = node
-        .style
-        .color
-        .unwrap_or(super::Color::WHITE)
-        .with_opacity(node.style.opacity);
+    // Retargeting moves existing pixels; it does not rasterize new text or
+    // ink. Keep their metadata truthful so a later raster check can detect
+    // a pending content/appearance change instead of accepting stale pixels.
     buffers.push(buffer);
 }
 
@@ -7682,7 +7679,9 @@ fn collect_text_buffers(
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
         buffer.clip_rect_precise = current_clip_rect_precise;
         buffer.clip_radius_precise = current_clip_radius_precise;
-        buffer.color = spec.color;
+        // These are still the previous pixels while the async job runs.
+        // Recording the requested color here would make the next raster
+        // check accept the old texture as already recolored.
         if label_debug_enabled() {
             info!(
                 stable_key = %buffer.stable_key,
@@ -8421,6 +8420,42 @@ mod tests {
         BorderStyle, BoxNode, Color, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
         LayoutDirection, Overflow, StylePosition,
     };
+
+    #[test]
+    fn pending_label_recolor_keeps_old_pixel_metadata_until_rasterized() {
+        use crate::backend::{async_assets::AsyncAssetJob, text::TextRasterizer};
+        let layout = |text: &str, color| {
+            let mut label = DecorationNode::new(DecorationNodeKind::Label(super::super::LabelNode { text: text.into() }))
+                .with_style(DecorationStyle { width: Some(40.0), height: Some(20.0), color: Some(color), ..Default::default() });
+            label.stable_id = Some("day".into());
+            DecorationTree::new(DecorationNode::new(DecorationNodeKind::Box(BoxNode { direction: LayoutDirection::Column }))
+                .with_children(vec![label, DecorationNode::new(DecorationNodeKind::WindowSlot)]))
+                .layout_for_client(LogicalRect::new(0, 20, 100, 100)).unwrap()
+        };
+        let old = layout("12", Color::rgba(0, 0, 0, 255));
+        let old_order = build_render_order_map(&old);
+        let mut sync = TextRasterizer::new(None);
+        let previous = build_text_buffers_with_fallback(&old, &old_order, 1.0, &mut sync, &[]);
+        assert_eq!(previous.len(), 1);
+        let new = layout("12", Color::WHITE);
+        let order = build_render_order_map(&new);
+        let geometry = build_node_geometry_map(&new);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut asynchronous = TextRasterizer::new(Some(sender));
+        let pending = build_text_buffers_with_fallback(&new, &order, 1.0, &mut asynchronous, &previous);
+        assert!(matches!(receiver.try_recv(), Ok(AsyncAssetJob::Text { .. })));
+        assert_eq!(pending[0].color, previous[0].color, "fallback pixels still have the old ink");
+        assert!(text_buffers_need_raster_for_layout(&new, &geometry, &pending, 1.0));
+        let moved = retarget_text_buffers_with_node_geometry(&new, &order, &geometry, &pending);
+        assert_eq!(moved[0].color, previous[0].color, "moving pixels cannot recolor them");
+        let replaced = layout("21", Color::WHITE);
+        let moved = retarget_text_buffers_with_node_geometry(&replaced, &build_render_order_map(&replaced),
+            &build_node_geometry_map(&replaced), &pending);
+        assert_eq!(moved[0].text, "12", "moving pixels cannot change their text either");
+        let ready = build_text_buffers_with_fallback(&new, &order, 1.0, &mut sync, &pending);
+        assert_eq!(ready[0].color, Color::WHITE);
+        assert!(!text_buffers_need_raster_for_layout(&new, &geometry, &ready, 1.0));
+    }
 
     #[test]
     fn shader_clip_coverage_stays_inside_border_ring_at_fractional_scale() {

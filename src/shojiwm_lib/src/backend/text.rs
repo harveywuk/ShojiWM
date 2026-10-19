@@ -206,7 +206,7 @@ impl TextRasterizer {
         let metrics = Metrics::new(font_size, line_height.max(1.0));
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
 
-        let attrs = attrs_for_spec(spec);
+        let attrs = attrs_for_spec(spec, &self.font_system);
         let alignment = alignment_for_spec(spec.text_align.as_deref());
 
         let shape = |buffer: &mut Buffer, font_system: &mut FontSystem, text: &str| {
@@ -317,7 +317,7 @@ impl LabelMeasurer {
         let line_height = spec.line_height.unwrap_or(font_size.ceil() + 4.0);
         let metrics = Metrics::new(font_size, line_height.max(1.0));
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
-        let attrs = attrs_for_spec(spec);
+        let attrs = attrs_for_spec(spec, &self.font_system);
 
         {
             let mut buffer = buffer.borrow_with(&mut self.font_system);
@@ -664,25 +664,54 @@ pub(crate) fn memory_text_element(
     }
 }
 
-fn attrs_for_spec<'a>(spec: &'a LabelSpec) -> Attrs<'a> {
-    let mut attrs = Attrs::new()
+/// Resolve the advertised family stack before shaping. Passing an unavailable
+/// family to cosmic-text skips the remaining preferred families; its script
+/// fallback can even choose bitmap emoji for ordinary semibold digits.
+fn resolve_font_family<'a>(
+    families: impl IntoIterator<Item = &'a str>,
+    available: impl Fn(&str) -> bool,
+) -> CosmicFamily<'a> {
+    for family in families {
+        let generic = match family.to_ascii_lowercase().as_str() {
+            "sans-serif" | "ui-sans-serif" | "system-ui" => Some(CosmicFamily::SansSerif),
+            "serif" | "ui-serif" => Some(CosmicFamily::Serif),
+            "monospace" | "ui-monospace" => Some(CosmicFamily::Monospace),
+            "cursive" => Some(CosmicFamily::Cursive),
+            "fantasy" => Some(CosmicFamily::Fantasy),
+            _ => None,
+        };
+        if let Some(generic) = generic {
+            return generic;
+        }
+        if available(family) {
+            return CosmicFamily::Name(family);
+        }
+    }
+    CosmicFamily::SansSerif
+}
+
+fn attrs_for_spec<'a>(spec: &'a LabelSpec, font_system: &FontSystem) -> Attrs<'a> {
+    let family = resolve_font_family(
+        spec.font_family.iter().flatten().map(String::as_str),
+        |family| {
+            font_system.db().faces().any(|face| {
+                face.families
+                    .iter()
+                    // fontdb and cosmic-text match named families exactly.
+                    .any(|(name, _)| name == family)
+            })
+        },
+    );
+    Attrs::new()
         .color(CosmicColor::rgba(
             spec.color.r,
             spec.color.g,
             spec.color.b,
             spec.color.a,
         ))
-        .weight(CosmicWeight(parse_font_weight(spec.font_weight.as_ref())));
-
-    if let Some(family) = spec
-        .font_family
-        .as_ref()
-        .and_then(|families| families.first())
-    {
-        attrs = attrs.family(CosmicFamily::Name(family.as_str()));
-    }
-
-    attrs.style(CosmicStyle::Normal)
+        .weight(CosmicWeight(parse_font_weight(spec.font_weight.as_ref())))
+        .family(family)
+        .style(CosmicStyle::Normal)
 }
 
 fn alignment_for_spec(text_align: Option<&str>) -> Option<Align> {
@@ -750,7 +779,57 @@ fn intersect_logical_rect(
 
 #[cfg(test)]
 mod tests {
-    use super::ellipsize;
+    use super::{CosmicFamily, ellipsize, resolve_font_family};
+
+    #[test]
+    fn font_family_stack_uses_first_installed_preference() {
+        let stack = ["SF Pro Text", "SF Pro", "Inter", "sans-serif"];
+        assert_eq!(
+            resolve_font_family(stack, |name| name == "SF Pro" || name == "Inter"),
+            CosmicFamily::Name("SF Pro")
+        );
+        assert_eq!(
+            resolve_font_family(stack, |name| name == "Inter"),
+            CosmicFamily::Name("Inter")
+        );
+    }
+
+    #[test]
+    fn font_family_stack_preserves_available_primary_face() {
+        assert_eq!(
+            resolve_font_family(["SF Pro Text", "sans-serif"], |_| true),
+            CosmicFamily::Name("SF Pro Text")
+        );
+    }
+
+    #[test]
+    fn font_family_stack_maps_generic_families_instead_of_literal_names() {
+        for (name, expected) in [
+            ("Sans-Serif", CosmicFamily::SansSerif),
+            ("system-ui", CosmicFamily::SansSerif),
+            ("serif", CosmicFamily::Serif),
+            ("monospace", CosmicFamily::Monospace),
+            ("cursive", CosmicFamily::Cursive),
+            ("fantasy", CosmicFamily::Fantasy),
+        ] {
+            assert_eq!(
+                resolve_font_family(["Missing preferred face", name, "Later face"], |_| false),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn font_family_stack_missing_or_empty_uses_generic_sans() {
+        assert_eq!(
+            resolve_font_family(["Missing preferred face"], |_| false),
+            CosmicFamily::SansSerif
+        );
+        assert_eq!(
+            resolve_font_family([], |_| false),
+            CosmicFamily::SansSerif
+        );
+    }
 
     fn at_most(chars: usize) -> impl FnMut(&str) -> bool {
         move |text: &str| text.chars().count() <= chars
