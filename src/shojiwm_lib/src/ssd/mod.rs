@@ -2095,7 +2095,22 @@ pub(super) fn layout_node_with_scale(
         round_half_up(rect.width as f64 * frame.scale) + root_extra_px.0,
         round_half_up(rect.height as f64 * frame.scale) + root_extra_px.1,
     );
-    layout_node_resolved(node, root_rect, None, window_slot_size, frame, root_rect)
+    let mut root = layout_node_resolved(node, root_rect, None, window_slot_size, frame, root_rect)?;
+    inherit_opacity(&mut root, 1.0);
+    Ok(root)
+}
+
+/// Opacity applies to a node and everything inside it: each node paints
+/// with its own style only, so a node's opacity becomes its own times its
+/// ancestors' (text and icons in a fading container fade with it).
+fn inherit_opacity(node: &mut ComputedDecorationNode, parent: f32) {
+    let effective = node.style.opacity.unwrap_or(1.0).clamp(0.0, 1.0) * parent;
+    if node.style.opacity.is_some() || parent < 1.0 {
+        node.style.opacity = Some(effective);
+    }
+    for child in &mut node.children {
+        inherit_opacity(child, effective);
+    }
 }
 
 fn layout_node_resolved(
@@ -2220,6 +2235,15 @@ pub(super) fn reapply_tree_preserving_layout(
     node: &DecorationNode,
     inherited_clip: Option<ResolvedDecorationClip>,
 ) {
+    reapply_node_preserving_layout(computed, node, inherited_clip);
+    inherit_opacity(computed, 1.0);
+}
+
+fn reapply_node_preserving_layout(
+    computed: &mut ComputedDecorationNode,
+    node: &DecorationNode,
+    inherited_clip: Option<ResolvedDecorationClip>,
+) {
     let frame = computed.frame;
     let scale = frame.scale;
     computed.stable_id = node.stable_id.clone();
@@ -2245,7 +2269,7 @@ pub(super) fn reapply_tree_preserving_layout(
         } else {
             computed.resolved_effective_clip
         };
-        reapply_tree_preserving_layout(computed_child, node_child, inherited_clip);
+        reapply_node_preserving_layout(computed_child, node_child, inherited_clip);
     }
 }
 
@@ -3687,6 +3711,41 @@ mod tests {
             layout.window_slot_rect(),
             Some(LogicalRect::new(2, 2, 96, 46))
         );
+    }
+
+    #[test]
+    fn opacity_multiplies_into_descendants() {
+        let half = || DecorationStyle { opacity: Some(0.5), ..Default::default() };
+        let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                direction: LayoutDirection::Column,
+            }))
+            .with_style(half())
+            .with_children(vec![
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                    direction: LayoutDirection::Column,
+                }))
+                .with_style(half()),
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                    direction: LayoutDirection::Column,
+                })),
+            ]),
+            DecorationNode::new(DecorationNodeKind::WindowSlot),
+        ]);
+
+        let layout = DecorationTree::new(root)
+            .layout(LogicalRect::new(0, 0, 100, 50))
+            .expect("layout should succeed");
+        let faded = &layout.root.children[0];
+
+        assert_eq!(layout.root.style.opacity, None);
+        assert_eq!(faded.style.opacity, Some(0.5));
+        assert_eq!(faded.children[0].style.opacity, Some(0.25));
+        assert_eq!(faded.children[1].style.opacity, Some(0.5));
+        assert_eq!(layout.root.children[1].style.opacity, None);
     }
 
     #[test]

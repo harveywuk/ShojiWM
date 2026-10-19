@@ -226,6 +226,7 @@ pub fn framebuffer_backdrop_element_for_window_rect(
         clip_rect_precise: None,
         clip_radius_precise: None,
         node_shape: Default::default(),
+        opacity: 1.0,
     };
     backdrop_shader_effect_element(renderer, decoration, &cached, output_geo, scale, alpha)
 }
@@ -428,7 +429,7 @@ pub(crate) fn shader_effect_spec_in_root(
         // The working texture starts at the node (plus capture padding), so
         // the frame is the content rect.
         frame: cached.node_shape.effect_frame(None, scale.x),
-        alpha_bits: alpha.to_bits(),
+        alpha_bits: (alpha * cached.opacity).to_bits(),
         render_scale,
         clip_rect: if gap_disable_decoration_clip_enabled()
             || gap_disable_titlebar_clip_enabled(cached.rect.height)

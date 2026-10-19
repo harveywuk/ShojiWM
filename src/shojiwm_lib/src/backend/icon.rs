@@ -44,6 +44,8 @@ pub struct CachedDecorationIcon {
     pub clip_rect_precise: Option<PreciseLogicalRect>,
     pub clip_radius_precise: Option<f32>,
     pub buffer: MemoryRenderBuffer,
+    /// The node's opacity (its ancestors' included), applied when drawn.
+    pub opacity: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -378,6 +380,7 @@ fn cached_icon_from_buffer(spec: &IconSpec, buffer: MemoryRenderBuffer) -> Cache
         clip_rect_precise: None,
         clip_radius_precise: None,
         buffer,
+        opacity: 1.0,
     }
 }
 
@@ -554,7 +557,7 @@ pub(crate) fn memory_icon_element(
         renderer,
         physical.loc.to_f64(),
         &icon.buffer,
-        Some(alpha.clamp(0.0, 1.0)),
+        Some((alpha * icon.opacity).clamp(0.0, 1.0)),
         None,
         None,
         Kind::Unspecified,

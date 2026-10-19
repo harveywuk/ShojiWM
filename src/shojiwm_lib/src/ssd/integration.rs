@@ -7483,6 +7483,7 @@ fn collect_cached_buffers(
                 .filter(|clip| clip.radius.raw() > 0)
                 .or(clips.nearest_rounded);
             shader_buffers.push(CachedShaderEffect {
+                opacity: node.style.opacity.unwrap_or(1.0),
                 owner_node_id: node.stable_id.clone(),
                 stable_key: format!("{path}:shader"),
                 order: *order_map
@@ -7599,7 +7600,9 @@ fn collect_text_buffers(
                 .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
         ),
         text: label.text.clone(),
-        color: color.with_opacity(node.style.opacity),
+        // Opacity is applied when drawn (`opacity` below): baked into the
+        // colour, every step of a fade would rasterize the text again.
+        color,
         font_size: node.style.font_size.unwrap_or(13.0) as f32,
         font_weight: node.style.font_weight.clone(),
         font_family: node.style.font_family.clone(),
@@ -7651,6 +7654,7 @@ fn collect_text_buffers(
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
         buffer.clip_rect_precise = current_clip_rect_precise;
         buffer.clip_radius_precise = current_clip_radius_precise;
+        buffer.opacity = node.style.opacity.unwrap_or(1.0);
         if label_debug_enabled() {
             info!(
                 stable_key = %buffer.stable_key,
@@ -7679,6 +7683,7 @@ fn collect_text_buffers(
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
         buffer.clip_rect_precise = current_clip_rect_precise;
         buffer.clip_radius_precise = current_clip_radius_precise;
+        buffer.opacity = node.style.opacity.unwrap_or(1.0);
         // These are still the previous pixels while the async job runs.
         // Recording the requested color here would make the next raster
         // check accept the old texture as already recolored.
@@ -7896,6 +7901,7 @@ fn collect_icon_buffers(
         buffer.clip_radius_precise = node
             .resolved_effective_clip
             .map(|clip| node.frame.logical_len(clip.radius).max(0.0));
+        buffer.opacity = node.style.opacity.unwrap_or(1.0);
         buffers.push(buffer);
     }
 }

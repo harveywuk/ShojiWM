@@ -54,6 +54,8 @@ pub struct CachedShaderEffect {
     pub clip_radius_precise: Option<f32>,
     /// The node's shape for `EffectContext`, in layout pixels.
     pub node_shape: NodeEffectShape,
+    /// The node's opacity (its ancestors' included), applied when drawn.
+    pub opacity: f32,
 }
 
 /// A decoration node's shape as the layout resolved it (physical pixels at

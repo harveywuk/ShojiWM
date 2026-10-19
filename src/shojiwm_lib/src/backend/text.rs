@@ -56,6 +56,9 @@ pub struct CachedDecorationLabel {
     pub text: String,
     pub color: Color,
     pub buffer: MemoryRenderBuffer,
+    /// The node's opacity (its ancestors' included), applied when drawn so
+    /// a fade does not rasterize the text again at every step.
+    pub opacity: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +142,7 @@ impl TextRasterizer {
                 text: spec.text.clone(),
                 color: spec.color,
                 buffer: cached.buffer.clone(),
+                opacity: 1.0,
             });
         }
 
@@ -171,6 +175,7 @@ impl TextRasterizer {
             clip_radius_precise: None,
             text: spec.text.clone(),
             color: spec.color,
+            opacity: 1.0,
             buffer: MemoryRenderBuffer::from_slice(
                 &rendered.pixels,
                 Fourcc::Argb8888,
@@ -598,7 +603,7 @@ pub(crate) fn memory_text_element(
         renderer,
         physical.loc.to_f64(),
         &label.buffer,
-        Some(alpha.clamp(0.0, 1.0)),
+        Some((alpha * label.opacity).clamp(0.0, 1.0)),
         None,
         None,
         Kind::Unspecified,
