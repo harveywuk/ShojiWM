@@ -1098,6 +1098,9 @@ impl ConfigRuntime for ReactiveRuntime {
                     let invoked = batch(|| emit(|listeners| listeners.gesture_swipe_async.clone(), |listener| listener(&event)));
                     runtime::send(HostMessage::PointerHookResult(pointer_hook(invoked)));
                 }
+                RuntimeEvent::GesturePinch(event) => {
+                    batch(|| emit(|listeners| listeners.gesture_pinch_async.clone(), |listener| listener(&event)));
+                }
             }
             Ok(())
         });
