@@ -32,6 +32,18 @@ use crate::{
     ssd::{DecorationPointerMoveAsyncInvocation, RuntimeEventConfigUpdate},
 };
 
+/// Pointer input a config synthesizes: motion to `(x, y)` (global logical
+/// px), then `button` (a Linux code, `BTN_LEFT` = 272) pressed or released.
+/// It takes the same path as a device's: decorations, clients and grabs see
+/// it as real input. For tests, mostly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SyntheticPointerInput {
+    pub x: f64,
+    pub y: f64,
+    pub button: Option<u32>,
+    pub pressed: bool,
+}
+
 /// A side effect requested by the config runtime.
 #[derive(Debug, Clone)]
 pub enum HostMessage {
@@ -73,6 +85,8 @@ pub enum HostMessage {
     /// Start or end the config's input grab (`COMPOSITOR.input.grab`). While
     /// it is held, input arrives as `InputRequest::InputGrab`.
     InputGrab(crate::runtime_input_grab::RuntimeInputGrabUpdate),
+    /// Synthetic pointer input (`COMPOSITOR.input.synthesize_pointer`).
+    SyntheticPointer(SyntheticPointerInput),
     /// `COMPOSITOR.effect.background_effect` changed after it was first read
     /// (one of its signals moved). Replaces the effect; `None` turns it off.
     BackgroundEffect(Option<crate::ssd::BackgroundEffectConfig>),

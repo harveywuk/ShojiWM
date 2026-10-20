@@ -769,6 +769,21 @@ impl InputController {
     pub fn grab(&self, options: InputGrabOptions) -> InputGrab {
         crate::input_grab::grab(options)
     }
+
+    /// Move the pointer to `(x, y)` (global logical px), then press or
+    /// release `button` (`BTN_LEFT` = 272), if any, as a device would: the
+    /// same path decides what is under it, so decoration buttons, clients and
+    /// grabs all see real input. For tests, mostly.
+    pub fn synthesize_pointer(&self, x: f64, y: f64, button: Option<(u32, bool)>) {
+        crate::runtime::send(shojiwm_lib::runtime_api::HostMessage::SyntheticPointer(
+            shojiwm_lib::runtime_api::SyntheticPointerInput {
+                x,
+                y,
+                button: button.map(|(button, _)| button),
+                pressed: button.is_some_and(|(_, pressed)| pressed),
+            },
+        ));
+    }
 }
 
 pub(crate) fn reconfigure_input(force: bool) {

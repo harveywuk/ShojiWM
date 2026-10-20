@@ -747,15 +747,15 @@ impl ShojiWM {
         }
         if self.session_lock_active {
             // The lock owns input; tell the config its grab never started.
-            self.runtime_input_grab = Some(RuntimeInputGrabState {
-                id: update.id,
-                held_keys: Default::default(),
-            });
+            self.runtime_input_grab = Some(RuntimeInputGrabState::new(update.id, Default::default()));
             self.end_runtime_input_grab(Some("sessionLock"));
             return;
         }
         if let Some(grab) = self.runtime_input_grab.as_mut() {
             grab.id = update.id;
+            if let Some(passthrough) = update.pointer_passthrough {
+                grab.passthrough = passthrough;
+            }
             return;
         }
         let held_keys = self
@@ -763,10 +763,9 @@ impl ShojiWM {
             .get_keyboard()
             .map(|keyboard| keyboard.pressed_keys())
             .unwrap_or_default();
-        self.runtime_input_grab = Some(RuntimeInputGrabState {
-            id: update.id,
-            held_keys,
-        });
+        let mut grab = RuntimeInputGrabState::new(update.id, held_keys);
+        grab.passthrough = update.pointer_passthrough.unwrap_or_default();
+        self.runtime_input_grab = Some(grab);
         info!(grab_id = update.id, "input grab started");
 
         // Clients lose the pointer for the duration: hover states clear and
@@ -844,6 +843,18 @@ impl ShojiWM {
         )
     }
 
+    /// Whether the input grab takes pointer input at `pos`: there is a grab
+    /// and `pos` is outside its passthrough (with no passthrough press
+    /// held). For motion it also notes which way the pointer went.
+    fn input_grab_takes_pointer(&mut self, pos: Point<f64, Logical>) -> bool {
+        let Some(grab) = self.runtime_input_grab.as_mut() else {
+            return false;
+        };
+        let through = grab.passes(pos.x, pos.y);
+        grab.pointer_through = through;
+        !through
+    }
+
     /// Pointer motion under a grab: move the cursor, focus nothing.
     fn input_grab_pointer_motion(
         &mut self,
@@ -851,6 +862,10 @@ impl ShojiWM {
         pos: Point<f64, Logical>,
         time_msec: u32,
     ) {
+        // Back from the passthrough: what it hovered sees a leave.
+        if self.runtime_input_grab.as_ref().is_some_and(|grab| grab.passes(previous.x, previous.y)) {
+            self.update_decoration_hover_target(Point::from((-1.0e9, -1.0e9)));
+        }
         let pointer = self.seat.get_pointer().unwrap();
         pointer.motion(
             self,
@@ -1346,7 +1361,7 @@ impl ShojiWM {
                     );
                     return;
                 }
-                if self.runtime_input_grab.is_some() {
+                if self.input_grab_takes_pointer(pos) {
                     self.input_grab_pointer_motion(previous_pos, pos, event.time_msec());
                     return;
                 }
@@ -1439,687 +1454,10 @@ impl ShojiWM {
                     return;
                 };
 
-                let serial = SERIAL_COUNTER.next_serial();
-
-                let pointer = self.seat.get_pointer().unwrap();
-                let previous_pos = pointer.current_location();
-                if self.active_pointer_lock_focus(&pointer).is_some() {
-                    return;
-                }
-
-                if self.session_lock_active {
-                    self.forward_locked_pointer_motion(pos, serial, event.time_msec());
-                    return;
-                }
-                if self.runtime_input_grab.is_some() {
-                    self.input_grab_pointer_motion(previous_pos, pos, event.time_msec());
-                    return;
-                }
-
-                self.pointer_contents = self.pointer_contents_at(pos);
-                let under = self.pointer_contents.surface.clone();
-
-                pointer.motion(
-                    self,
-                    under,
-                    &MotionEvent {
-                        location: pos,
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.frame(self);
-                self.activate_pointer_constraint_at(pos);
-                self.dispatch_pointer_move_events(previous_pos, pos, event.time_msec());
-                // An absolute device cannot push past the layout edge.
-                self.update_pointer_regions(pos, Point::default(), event.time_msec());
-                self.update_decoration_hover_target(pos);
-                if !pointer.is_grabbed() {
-                    self.update_decoration_cursor_icon(pos);
-                }
-                self.note_pointer_input_for_latency(event.time());
-                self.request_redraw_for_pointer_motion();
+                self.handle_pointer_motion_absolute(pos, event.time_msec(), event.time());
             }
             InputEvent::PointerButton { event, .. } => {
-                let pointer = self.seat.get_pointer().unwrap();
-
-                let serial = SERIAL_COUNTER.next_serial();
-
-                let button = event.button_code();
-
-                let button_state = event.state();
-
-                // A pointer button press cancels a pending modifier tap (e.g. Super+drag).
-                if matches!(button_state, ButtonState::Pressed) {
-                    self.tap_interrupted = true;
-                }
-
-                if pointer_button_debug_enabled() {
-                    debug!(
-                        button,
-                        state = ?button_state,
-                        pointer_location = ?pointer.current_location(),
-                        "pointer button event received"
-                    );
-                }
-                if button == 273 {
-                    self.note_right_click_button(
-                        matches!(button_state, ButtonState::Pressed),
-                        pointer.current_location(),
-                        "process-input-event",
-                    );
-                }
-                if button == 272 && button_state == ButtonState::Released {
-                    self.release_decoration_active_target();
-                }
-
-                if self.session_lock_active {
-                    self.forward_locked_pointer_button(
-                        button,
-                        button_state,
-                        serial,
-                        event.time_msec(),
-                    );
-                    return;
-                }
-                if self.runtime_input_grab.is_some() {
-                    self.input_grab_pointer_button(button, button_state, event.time_msec());
-                    return;
-                }
-
-                // SSD `<Popup>`s hear about every press: anchors pressed
-                // (`trigger="click"`) and light dismiss of `Auto` popups.
-                if button_state == ButtonState::Pressed {
-                    self.handle_popup_press(pointer.current_location());
-                }
-
-                // A locked-pointer client already owns pointer focus. Re-running compositor hit
-                // testing before a button event can briefly change that focus while the client
-                // updates its surface tree, deactivating the lock and leaking one absolute move.
-                if self.active_pointer_lock_focus(&pointer).is_some() {
-                    pointer.button(
-                        self,
-                        &ButtonEvent {
-                            button,
-                            state: button_state,
-                            serial,
-                            time: event.time_msec(),
-                        },
-                    );
-                    pointer.frame(self);
-                    // The locked client will commit its visual response itself. Avoid submitting
-                    // an unchanged fullscreen frame before that commit.
-                    let _ = self.display_handle.flush_clients();
-                    return;
-                }
-
-                if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
-                    if unfocused_popup_focus_debug_enabled() && button == 273 {
-                        let pos = pointer.current_location();
-                        let keyboard_focus = self
-                            .seat
-                            .get_keyboard()
-                            .and_then(|keyboard| keyboard.current_focus())
-                            .map(|surface| surface.id().protocol_id());
-                        let transformed_window_under = self
-                            .window_under_transformed(LogicalPoint::new(
-                                pos.x.floor() as i32,
-                                pos.y.floor() as i32,
-                            ))
-                            .map(|(window, _)| {
-                                window
-                                    .toplevel()
-                                    .map(|toplevel| toplevel.wl_surface().id().protocol_id())
-                                    .unwrap_or_default()
-                            });
-                        let raw_window_under = self
-                            .raw_window_under(LogicalPoint::new(
-                                pos.x.floor() as i32,
-                                pos.y.floor() as i32,
-                            ))
-                            .map(|(window, _)| {
-                                window
-                                    .toplevel()
-                                    .map(|toplevel| toplevel.wl_surface().id().protocol_id())
-                                    .unwrap_or_default()
-                            });
-                        let layer_under = self.layer_surface_under(pos).map(|layer| {
-                            (
-                                layer.wl_surface().id().protocol_id(),
-                                layer.layer(),
-                                layer.cached_state().keyboard_interactivity,
-                            )
-                        });
-                        let pointer_target_before = self
-                            .surface_under(pos)
-                            .map(|(surface, origin)| (surface.id().protocol_id(), origin));
-                        debug!(
-                            button,
-                            pointer_location = ?pos,
-                            keyboard_focus_surface = ?keyboard_focus,
-                            transformed_window_under = ?transformed_window_under,
-                            raw_window_under = ?raw_window_under,
-                            layer_under = ?layer_under,
-                            pointer_target_before = ?pointer_target_before,
-                            "unfocused popup focus debug: pointer press pre-focus"
-                        );
-                    }
-                    self.pointer_contents = self.pointer_contents_at(pointer.current_location());
-                    let under = self.pointer_contents.surface.clone();
-                    self.log_stack_hit_debug(
-                        "button-press-before-motion",
-                        pointer.current_location(),
-                    );
-                    if layer_focus_debug_enabled() {
-                        debug!(
-                            pointer_location = ?pointer.current_location(),
-                            pointer_target_surface =
-                                under.as_ref().map(|(surface, _)| surface.id().protocol_id()),
-                            pointer_target_origin = ?under.as_ref().map(|(_, origin)| *origin),
-                            "pointer target before button dispatch"
-                        );
-                    }
-                    pointer.motion(
-                        self,
-                        under,
-                        &MotionEvent {
-                            location: pointer.current_location(),
-                            serial,
-                            time: event.time_msec(),
-                        },
-                    );
-                    pointer.frame(self);
-
-                    if layer_focus_debug_enabled() {
-                        let keyboard_focus = self
-                            .seat
-                            .get_keyboard()
-                            .and_then(|keyboard| keyboard.current_focus())
-                            .map(|surface| surface.id().protocol_id());
-                        debug!(
-                            pointer_location = ?pointer.current_location(),
-                            button,
-                            keyboard_focus_surface = ?keyboard_focus,
-                            layer_under = ?self.pointer_contents.layer.as_ref().and_then(|layer| {
-                                layer.can_receive_keyboard_focus().then(|| {
-                                    (
-                                        layer.wl_surface().id().protocol_id(),
-                                        layer.layer(),
-                                        layer.cached_state().keyboard_interactivity,
-                                    )
-                                })
-                            }),
-                            any_layer_under = ?self.pointer_contents.layer.as_ref().map(|layer| {
-                                (
-                                    layer.wl_surface().id().protocol_id(),
-                                    layer.layer(),
-                                    layer.cached_state().keyboard_interactivity,
-                                )
-                            }),
-                            "layer focus decision on pointer press"
-                        );
-                    }
-                    let layer_under_pointer = self.pointer_contents.layer.clone();
-                    let _ = self.refresh_window_decorations();
-                    // Runtime decoration refresh can change ManagedWindow zIndex
-                    // (for example createWindowStack().raise() on open/focus).
-                    // Recompute the pointer target before SSD hit-test gating;
-                    // otherwise pointer_allows_window_interaction can compare
-                    // the newly topmost decoration against a stale client
-                    // surface from the previously topmost window.
-                    self.pointer_contents = self.pointer_contents_at(pointer.current_location());
-                    self.log_stack_hit_debug(
-                        "button-press-after-refresh",
-                        pointer.current_location(),
-                    );
-                    self.update_decoration_hover_target(pointer.current_location());
-                    if button == 272 {
-                        self.press_decoration_active_target(pointer.current_location());
-                    }
-
-                    if button == 272
-                        && layer_under_pointer.is_none()
-                        && self.runtime_window_move_modifier.is_some_and(|modifier| {
-                            modifier.matches(&self.current_keyboard_modifiers)
-                        })
-                        && let Some(window) = self
-                            .window_under_transformed(LogicalPoint::new(
-                                pointer.current_location().x.floor() as i32,
-                                pointer.current_location().y.floor() as i32,
-                            ))
-                            .map(|(window, _)| window.clone())
-                        && self.pointer_allows_window_interaction(
-                            self.pointer_contents
-                                .surface
-                                .as_ref()
-                                .map(|(surface, _)| surface),
-                            &window,
-                        )
-                    {
-                        let focus_surface = self
-                            .pointer_contents
-                            .surface
-                            .as_ref()
-                            .map(|(surface, _)| surface.clone());
-                        let start_data = compositor_pointer_grab_start_data(
-                            self.pointer_contents.surface.clone(),
-                            button,
-                            pointer.current_location(),
-                        );
-                        self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
-
-                        if let Some(initial_window_location) = self.space.element_location(&window)
-                        {
-                            let initial_window_rect = smithay::utils::Rectangle::new(
-                                initial_window_location,
-                                window.geometry().size,
-                            );
-                            let initial_event_rect =
-                                self.managed_resize_initial_rect(&window, initial_window_rect);
-                            let mut grab = MoveSurfaceGrab::start(
-                                start_data,
-                                window,
-                                initial_window_location,
-                                initial_event_rect,
-                                WindowMoveSourceSnapshot::Modifier,
-                            );
-                            grab.notify_start(self);
-                            pointer.set_grab(
-                                self,
-                                grab,
-                                serial,
-                                smithay::input::pointer::Focus::Clear,
-                            );
-                        }
-
-                        pointer.frame(self);
-                        let _ = self.display_handle.flush_clients();
-                        self.schedule_redraw();
-                        return;
-                    }
-
-                    if button == 273
-                        && layer_under_pointer.is_none()
-                        && self.runtime_window_resize_modifier.is_some_and(|modifier| {
-                            modifier.matches(&self.current_keyboard_modifiers)
-                        })
-                        && let Some(window) = self
-                            .window_under_transformed(LogicalPoint::new(
-                                pointer.current_location().x.floor() as i32,
-                                pointer.current_location().y.floor() as i32,
-                            ))
-                            .map(|(window, _)| window.clone())
-                        && self.pointer_allows_window_interaction(
-                            self.pointer_contents
-                                .surface
-                                .as_ref()
-                                .map(|(surface, _)| surface),
-                            &window,
-                        )
-                    {
-                        let focus_surface = self
-                            .pointer_contents
-                            .surface
-                            .as_ref()
-                            .map(|(surface, _)| surface.clone());
-                        let start_data = compositor_pointer_grab_start_data(
-                            self.pointer_contents.surface.clone(),
-                            button,
-                            pointer.current_location(),
-                        );
-                        self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
-
-                        if let Some(initial_window_location) = self.space.element_location(&window)
-                        {
-                            let initial_window_size = window.geometry().size;
-                            let initial_window_rect = smithay::utils::Rectangle::new(
-                                initial_window_location,
-                                initial_window_size,
-                            );
-                            let initial_event_rect =
-                                self.managed_resize_initial_rect(&window, initial_window_rect);
-
-                            let pointer_loc = pointer.current_location();
-                            let window_rect = initial_window_rect;
-                            let center_x = window_rect.loc.x + window_rect.size.w / 2;
-                            let center_y = window_rect.loc.y + window_rect.size.h / 2;
-
-                            let mut edges = ResizeEdge::empty();
-                            if pointer_loc.x < center_x as f64 {
-                                edges |= ResizeEdge::LEFT;
-                            } else {
-                                edges |= ResizeEdge::RIGHT;
-                            }
-                            if pointer_loc.y < center_y as f64 {
-                                edges |= ResizeEdge::TOP;
-                            } else {
-                                edges |= ResizeEdge::BOTTOM;
-                            }
-
-                            if let Some(mut grab) = ResizeSurfaceGrab::start(
-                                start_data,
-                                window,
-                                edges,
-                                initial_window_rect,
-                                initial_event_rect,
-                                WindowResizeSourceSnapshot::Modifier,
-                            ) {
-                                grab.notify_start(self);
-                                pointer.set_grab(
-                                    self,
-                                    grab,
-                                    serial,
-                                    smithay::input::pointer::Focus::Clear,
-                                );
-                            }
-
-                            pointer.frame(self);
-                            let _ = self.display_handle.flush_clients();
-                            self.schedule_redraw();
-                            return;
-                        }
-                    }
-
-                    if layer_under_pointer.is_none()
-                        && let Some((window, hit)) =
-                            self.decoration_under(pointer.current_location())
-                        && self.pointer_allows_window_interaction(
-                            self.pointer_contents
-                                .surface
-                                .as_ref()
-                                .map(|(surface, _)| surface),
-                            &window,
-                        )
-                    {
-                        let focus_surface = self
-                            .pointer_contents
-                            .surface
-                            .as_ref()
-                            .map(|(surface, _)| surface.clone());
-                        self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
-
-                        match hit {
-                            DecorationHitTestResult::Action(WindowAction::Close) => {
-                                pointer.button(
-                                    self,
-                                    &ButtonEvent {
-                                        button,
-                                        state: button_state,
-                                        serial,
-                                        time: event.time_msec(),
-                                    },
-                                );
-                                if let Err(error) =
-                                    crate::backend::tty::capture_live_snapshot_for_close(
-                                        self, &window,
-                                    )
-                                {
-                                    warn!(
-                                        ?error,
-                                        "failed to capture decorated window before close request"
-                                    );
-                                }
-                                if let Some(toplevel) = window.toplevel() {
-                                    toplevel.send_close();
-                                }
-                            }
-                            DecorationHitTestResult::Action(WindowAction::Maximize) => {
-                                pointer.button(
-                                    self,
-                                    &ButtonEvent {
-                                        button,
-                                        state: button_state,
-                                        serial,
-                                        time: event.time_msec(),
-                                    },
-                                );
-                                self.request_window_maximize(
-                                    &window,
-                                    true,
-                                    crate::ssd::WindowStateRequestSourceSnapshot::Api,
-                                );
-                            }
-                            DecorationHitTestResult::Action(WindowAction::Unmaximize) => {
-                                pointer.button(
-                                    self,
-                                    &ButtonEvent {
-                                        button,
-                                        state: button_state,
-                                        serial,
-                                        time: event.time_msec(),
-                                    },
-                                );
-                                self.request_window_maximize(
-                                    &window,
-                                    false,
-                                    crate::ssd::WindowStateRequestSourceSnapshot::Api,
-                                );
-                            }
-                            DecorationHitTestResult::Action(WindowAction::Minimize) => {
-                                pointer.button(
-                                    self,
-                                    &ButtonEvent {
-                                        button,
-                                        state: button_state,
-                                        serial,
-                                        time: event.time_msec(),
-                                    },
-                                );
-                                self.request_window_minimize(
-                                    &window,
-                                    true,
-                                    crate::ssd::WindowStateRequestSourceSnapshot::Api,
-                                );
-                            }
-                            DecorationHitTestResult::Action(WindowAction::RuntimeHandler(
-                                handler_id,
-                            )) => {
-                                pointer.button(
-                                    self,
-                                    &ButtonEvent {
-                                        button,
-                                        state: button_state,
-                                        serial,
-                                        time: event.time_msec(),
-                                    },
-                                );
-                                // The left button clicks; the right one is a
-                                // secondary click (`on_secondary_click`); the
-                                // others do nothing.
-                                let target = match button {
-                                    272 => Some(handler_id.clone()),
-                                    273 => Some(decoration_handler_variant(&handler_id, "secondary")),
-                                    _ => None,
-                                };
-                                if let Some(target) = target {
-                                    self.invoke_decoration_handler(&window, &target);
-                                }
-                            }
-                            DecorationHitTestResult::Move => {
-                                let start_data = compositor_pointer_grab_start_data(
-                                    self.pointer_contents.surface.clone(),
-                                    button,
-                                    pointer.current_location(),
-                                );
-                                if let Some(initial_window_location) =
-                                    self.space.element_location(&window)
-                                {
-                                    let initial_window_rect = smithay::utils::Rectangle::new(
-                                        initial_window_location,
-                                        window.geometry().size,
-                                    );
-                                    let initial_event_rect = self
-                                        .managed_resize_initial_rect(&window, initial_window_rect);
-                                    let mut grab = MoveSurfaceGrab::start(
-                                        start_data,
-                                        window,
-                                        initial_window_location,
-                                        initial_event_rect,
-                                        WindowMoveSourceSnapshot::Ssd,
-                                    );
-                                    grab.notify_start(self);
-                                    pointer.set_grab(
-                                        self,
-                                        grab,
-                                        serial,
-                                        smithay::input::pointer::Focus::Clear,
-                                    );
-                                }
-                            }
-                            DecorationHitTestResult::Resize(edges) => {
-                                let start_data = compositor_pointer_grab_start_data(
-                                    self.pointer_contents.surface.clone(),
-                                    button,
-                                    pointer.current_location(),
-                                );
-                                if let Some(initial_window_location) =
-                                    self.space.element_location(&window)
-                                {
-                                    let initial_window_size = window.geometry().size;
-                                    if let Some(toplevel) = window.toplevel() {
-                                        toplevel.with_pending_state(|state| {
-                                            state.states.set(
-                                                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Resizing,
-                                            );
-                                        });
-                                        toplevel.send_pending_configure();
-                                    }
-
-                                    let initial_window_rect = smithay::utils::Rectangle::new(
-                                        initial_window_location,
-                                        initial_window_size,
-                                    );
-                                    let initial_event_rect = self
-                                        .managed_resize_initial_rect(&window, initial_window_rect);
-
-                                    if let Some(mut grab) = ResizeSurfaceGrab::start(
-                                        start_data,
-                                        window,
-                                        resize_edges_to_grab(edges),
-                                        initial_window_rect,
-                                        initial_event_rect,
-                                        WindowResizeSourceSnapshot::Ssd,
-                                    ) {
-                                        grab.notify_start(self);
-                                        pointer.set_grab(
-                                            self,
-                                            grab,
-                                            serial,
-                                            smithay::input::pointer::Focus::Clear,
-                                        );
-                                    }
-                                }
-                            }
-                            DecorationHitTestResult::ClientArea => {
-                                pointer.button(
-                                    self,
-                                    &ButtonEvent {
-                                        button,
-                                        state: button_state,
-                                        serial,
-                                        time: event.time_msec(),
-                                    },
-                                );
-                            }
-                            DecorationHitTestResult::Outside => {}
-                            DecorationHitTestResult::Popup => {}
-                        }
-
-                        pointer.frame(self);
-                        let _ = self.display_handle.flush_clients();
-                        self.schedule_redraw();
-                        return;
-                    } else if layer_under_pointer.is_none()
-                        && let Some((window, _loc)) = self
-                            .window_under_transformed(LogicalPoint::new(
-                                pointer.current_location().x.floor() as i32,
-                                pointer.current_location().y.floor() as i32,
-                            ))
-                            .map(|(w, _)| (w.clone(), ()))
-                        && self.pointer_allows_window_interaction(
-                            self.pointer_contents
-                                .surface
-                                .as_ref()
-                                .map(|(surface, _)| surface),
-                            &window,
-                        )
-                    {
-                        let focus_surface = self
-                            .pointer_contents
-                            .surface
-                            .as_ref()
-                            .map(|(surface, _)| surface.clone());
-                        self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
-                    } else if let Some(layer) = layer_under_pointer {
-                        if layer.can_receive_keyboard_focus() {
-                            self.focus_layer_surface_if_on_demand(Some(layer));
-                            self.update_keyboard_focus(serial);
-                        } else if layer_focus_debug_enabled() {
-                            debug!(
-                                layer_surface_id = layer.wl_surface().id().protocol_id(),
-                                layer = ?layer.layer(),
-                                keyboard_interactivity =
-                                    ?layer.cached_state().keyboard_interactivity,
-                                "leaving keyboard focus unchanged for non-interactive layer press"
-                            );
-                        }
-                    } else {
-                        self.focus_layer_surface_if_on_demand(None);
-                        self.update_keyboard_focus(serial);
-                    }
-
-                    if unfocused_popup_focus_debug_enabled() && button == 273 {
-                        let pos = pointer.current_location();
-                        let keyboard_focus = self
-                            .seat
-                            .get_keyboard()
-                            .and_then(|keyboard| keyboard.current_focus())
-                            .map(|surface| surface.id().protocol_id());
-                        let pointer_target_after = self
-                            .surface_under(pos)
-                            .map(|(surface, origin)| (surface.id().protocol_id(), origin));
-                        debug!(
-                            button,
-                            pointer_location = ?pos,
-                            keyboard_focus_surface = ?keyboard_focus,
-                            pointer_target_after = ?pointer_target_after,
-                            "unfocused popup focus debug: pointer press post-focus"
-                        );
-                    }
-                };
-
-                pointer.button(
-                    self,
-                    &ButtonEvent {
-                        button,
-                        state: button_state,
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.frame(self);
-                let _ = self.display_handle.flush_clients();
-                // Ensure the next redraw runs so frame callbacks flow to the clients that just
-                // received the button event. Without this, a button press on an idle surface
-                // (e.g. clicking a noctalia bar widget) does not trigger a render, so Quickshell
-                // can stall waiting for a wl_surface.frame callback before it even begins
-                // rendering the popup. Cursor motion has the same effect via the PointerMotion
-                // handler; doing it here keeps button and motion symmetric.
-                self.schedule_redraw();
-                if pointer_button_debug_enabled() {
-                    debug!(
-                        button,
-                        state = ?button_state,
-                        "pointer button forwarded and flushed"
-                    );
-                }
-                if crate::env_flag!("SHOJI_RIGHT_CLICK_TRACE") && button == 273 {
-                    debug!(
-                        state = ?button_state,
-                        pointer_location = ?pointer.current_location(),
-                        "right click trace: button forwarded and flushed"
-                    );
-                }
+                self.handle_pointer_button(event.button_code(), event.state(), event.time_msec());
             }
             InputEvent::PointerAxis { event, .. } => {
                 let source = event.source();
@@ -2173,7 +1511,14 @@ impl ShojiWM {
                     let _ = self.display_handle.flush_clients();
                     return;
                 }
-                if self.runtime_input_grab.is_some() {
+                if self
+                    .runtime_input_grab
+                    .as_ref()
+                    .is_some_and(|grab| {
+                        let location = pointer.current_location();
+                        !grab.passes(location.x, location.y)
+                    })
+                {
                     let (position, output_name) = self.input_grab_pointer_point();
                     self.dispatch_input_grab_event(InputGrabEventSnapshot::Scroll {
                         delta_x: horizontal_amount,
@@ -2453,6 +1798,725 @@ impl ShojiWM {
                 self.runtime_gesture_pinch_fingers = 0;
             }
             _ => {}
+        }
+    }
+
+    /// Absolute pointer motion to `pos` (global logical, on an output),
+    /// from a device or synthesized (`synthetic_pointer`).
+    pub(crate) fn handle_pointer_motion_absolute(&mut self, pos: Point<f64, Logical>, time_msec: u32, time_us: u64) {
+        let serial = SERIAL_COUNTER.next_serial();
+
+        let pointer = self.seat.get_pointer().unwrap();
+        let previous_pos = pointer.current_location();
+        if self.active_pointer_lock_focus(&pointer).is_some() {
+            return;
+        }
+
+        if self.session_lock_active {
+            self.forward_locked_pointer_motion(pos, serial, time_msec);
+            return;
+        }
+        if self.input_grab_takes_pointer(pos) {
+            self.input_grab_pointer_motion(previous_pos, pos, time_msec);
+            return;
+        }
+
+        self.pointer_contents = self.pointer_contents_at(pos);
+        let under = self.pointer_contents.surface.clone();
+
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: pos,
+                serial,
+                time: time_msec,
+            },
+        );
+        pointer.frame(self);
+        self.activate_pointer_constraint_at(pos);
+        self.dispatch_pointer_move_events(previous_pos, pos, time_msec);
+        // An absolute device cannot push past the layout edge.
+        self.update_pointer_regions(pos, Point::default(), time_msec);
+        self.update_decoration_hover_target(pos);
+        if !pointer.is_grabbed() {
+            self.update_decoration_cursor_icon(pos);
+        }
+        self.note_pointer_input_for_latency(time_us);
+        self.request_redraw_for_pointer_motion();
+    }
+
+    /// A pointer button, from a device or synthesized (`synthetic_pointer`).
+    pub(crate) fn handle_pointer_button(&mut self, button: u32, button_state: ButtonState, time_msec: u32) {
+        let pointer = self.seat.get_pointer().unwrap();
+
+        let serial = SERIAL_COUNTER.next_serial();
+
+        // A pointer button press cancels a pending modifier tap (e.g. Super+drag).
+        if matches!(button_state, ButtonState::Pressed) {
+            self.tap_interrupted = true;
+        }
+
+        if pointer_button_debug_enabled() {
+            debug!(
+                button,
+                state = ?button_state,
+                pointer_location = ?pointer.current_location(),
+                "pointer button event received"
+            );
+        }
+        if button == 273 {
+            self.note_right_click_button(
+                matches!(button_state, ButtonState::Pressed),
+                pointer.current_location(),
+                "process-input-event",
+            );
+        }
+        if button == 272 && button_state == ButtonState::Released {
+            self.release_decoration_active_target();
+        }
+
+        if self.session_lock_active {
+            self.forward_locked_pointer_button(
+                button,
+                button_state,
+                serial,
+                time_msec,
+            );
+            return;
+        }
+        if let Some(grab) = self.runtime_input_grab.as_mut() {
+            // A press inside the passthrough, and its release, take
+            // the usual path; everything else goes to the grab.
+            let location = pointer.current_location();
+            let through = match button_state {
+                ButtonState::Pressed => {
+                    let inside = grab.passes(location.x, location.y);
+                    if inside {
+                        grab.passthrough_buttons.insert(button);
+                    }
+                    inside
+                }
+                ButtonState::Released => grab.passthrough_buttons.remove(&button),
+            };
+            if !through {
+                self.input_grab_pointer_button(button, button_state, time_msec);
+                return;
+            }
+        }
+
+        // SSD `<Popup>`s hear about every press: anchors pressed
+        // (`trigger="click"`) and light dismiss of `Auto` popups.
+        if button_state == ButtonState::Pressed {
+            self.handle_popup_press(pointer.current_location());
+        }
+
+        // A locked-pointer client already owns pointer focus. Re-running compositor hit
+        // testing before a button event can briefly change that focus while the client
+        // updates its surface tree, deactivating the lock and leaking one absolute move.
+        if self.active_pointer_lock_focus(&pointer).is_some() {
+            pointer.button(
+                self,
+                &ButtonEvent {
+                    button,
+                    state: button_state,
+                    serial,
+                    time: time_msec,
+                },
+            );
+            pointer.frame(self);
+            // The locked client will commit its visual response itself. Avoid submitting
+            // an unchanged fullscreen frame before that commit.
+            let _ = self.display_handle.flush_clients();
+            return;
+        }
+
+        if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
+            if unfocused_popup_focus_debug_enabled() && button == 273 {
+                let pos = pointer.current_location();
+                let keyboard_focus = self
+                    .seat
+                    .get_keyboard()
+                    .and_then(|keyboard| keyboard.current_focus())
+                    .map(|surface| surface.id().protocol_id());
+                let transformed_window_under = self
+                    .window_under_transformed(LogicalPoint::new(
+                        pos.x.floor() as i32,
+                        pos.y.floor() as i32,
+                    ))
+                    .map(|(window, _)| {
+                        window
+                            .toplevel()
+                            .map(|toplevel| toplevel.wl_surface().id().protocol_id())
+                            .unwrap_or_default()
+                    });
+                let raw_window_under = self
+                    .raw_window_under(LogicalPoint::new(
+                        pos.x.floor() as i32,
+                        pos.y.floor() as i32,
+                    ))
+                    .map(|(window, _)| {
+                        window
+                            .toplevel()
+                            .map(|toplevel| toplevel.wl_surface().id().protocol_id())
+                            .unwrap_or_default()
+                    });
+                let layer_under = self.layer_surface_under(pos).map(|layer| {
+                    (
+                        layer.wl_surface().id().protocol_id(),
+                        layer.layer(),
+                        layer.cached_state().keyboard_interactivity,
+                    )
+                });
+                let pointer_target_before = self
+                    .surface_under(pos)
+                    .map(|(surface, origin)| (surface.id().protocol_id(), origin));
+                debug!(
+                    button,
+                    pointer_location = ?pos,
+                    keyboard_focus_surface = ?keyboard_focus,
+                    transformed_window_under = ?transformed_window_under,
+                    raw_window_under = ?raw_window_under,
+                    layer_under = ?layer_under,
+                    pointer_target_before = ?pointer_target_before,
+                    "unfocused popup focus debug: pointer press pre-focus"
+                );
+            }
+            self.pointer_contents = self.pointer_contents_at(pointer.current_location());
+            let under = self.pointer_contents.surface.clone();
+            self.log_stack_hit_debug(
+                "button-press-before-motion",
+                pointer.current_location(),
+            );
+            if layer_focus_debug_enabled() {
+                debug!(
+                    pointer_location = ?pointer.current_location(),
+                    pointer_target_surface =
+                        under.as_ref().map(|(surface, _)| surface.id().protocol_id()),
+                    pointer_target_origin = ?under.as_ref().map(|(_, origin)| *origin),
+                    "pointer target before button dispatch"
+                );
+            }
+            pointer.motion(
+                self,
+                under,
+                &MotionEvent {
+                    location: pointer.current_location(),
+                    serial,
+                    time: time_msec,
+                },
+            );
+            pointer.frame(self);
+
+            if layer_focus_debug_enabled() {
+                let keyboard_focus = self
+                    .seat
+                    .get_keyboard()
+                    .and_then(|keyboard| keyboard.current_focus())
+                    .map(|surface| surface.id().protocol_id());
+                debug!(
+                    pointer_location = ?pointer.current_location(),
+                    button,
+                    keyboard_focus_surface = ?keyboard_focus,
+                    layer_under = ?self.pointer_contents.layer.as_ref().and_then(|layer| {
+                        layer.can_receive_keyboard_focus().then(|| {
+                            (
+                                layer.wl_surface().id().protocol_id(),
+                                layer.layer(),
+                                layer.cached_state().keyboard_interactivity,
+                            )
+                        })
+                    }),
+                    any_layer_under = ?self.pointer_contents.layer.as_ref().map(|layer| {
+                        (
+                            layer.wl_surface().id().protocol_id(),
+                            layer.layer(),
+                            layer.cached_state().keyboard_interactivity,
+                        )
+                    }),
+                    "layer focus decision on pointer press"
+                );
+            }
+            let layer_under_pointer = self.pointer_contents.layer.clone();
+            let _ = self.refresh_window_decorations();
+            // Runtime decoration refresh can change ManagedWindow zIndex
+            // (for example createWindowStack().raise() on open/focus).
+            // Recompute the pointer target before SSD hit-test gating;
+            // otherwise pointer_allows_window_interaction can compare
+            // the newly topmost decoration against a stale client
+            // surface from the previously topmost window.
+            self.pointer_contents = self.pointer_contents_at(pointer.current_location());
+            self.log_stack_hit_debug(
+                "button-press-after-refresh",
+                pointer.current_location(),
+            );
+            self.update_decoration_hover_target(pointer.current_location());
+            if button == 272 {
+                self.press_decoration_active_target(pointer.current_location());
+            }
+
+            if button == 272
+                && layer_under_pointer.is_none()
+                && self.runtime_window_move_modifier.is_some_and(|modifier| {
+                    modifier.matches(&self.current_keyboard_modifiers)
+                })
+                && let Some(window) = self
+                    .window_under_transformed(LogicalPoint::new(
+                        pointer.current_location().x.floor() as i32,
+                        pointer.current_location().y.floor() as i32,
+                    ))
+                    .map(|(window, _)| window.clone())
+                && self.pointer_allows_window_interaction(
+                    self.pointer_contents
+                        .surface
+                        .as_ref()
+                        .map(|(surface, _)| surface),
+                    &window,
+                )
+            {
+                let focus_surface = self
+                    .pointer_contents
+                    .surface
+                    .as_ref()
+                    .map(|(surface, _)| surface.clone());
+                let start_data = compositor_pointer_grab_start_data(
+                    self.pointer_contents.surface.clone(),
+                    button,
+                    pointer.current_location(),
+                );
+                self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
+
+                if let Some(initial_window_location) = self.space.element_location(&window)
+                {
+                    let initial_window_rect = smithay::utils::Rectangle::new(
+                        initial_window_location,
+                        window.geometry().size,
+                    );
+                    let initial_event_rect =
+                        self.managed_resize_initial_rect(&window, initial_window_rect);
+                    let mut grab = MoveSurfaceGrab::start(
+                        start_data,
+                        window,
+                        initial_window_location,
+                        initial_event_rect,
+                        WindowMoveSourceSnapshot::Modifier,
+                    );
+                    grab.notify_start(self);
+                    pointer.set_grab(
+                        self,
+                        grab,
+                        serial,
+                        smithay::input::pointer::Focus::Clear,
+                    );
+                }
+
+                pointer.frame(self);
+                let _ = self.display_handle.flush_clients();
+                self.schedule_redraw();
+                return;
+            }
+
+            if button == 273
+                && layer_under_pointer.is_none()
+                && self.runtime_window_resize_modifier.is_some_and(|modifier| {
+                    modifier.matches(&self.current_keyboard_modifiers)
+                })
+                && let Some(window) = self
+                    .window_under_transformed(LogicalPoint::new(
+                        pointer.current_location().x.floor() as i32,
+                        pointer.current_location().y.floor() as i32,
+                    ))
+                    .map(|(window, _)| window.clone())
+                && self.pointer_allows_window_interaction(
+                    self.pointer_contents
+                        .surface
+                        .as_ref()
+                        .map(|(surface, _)| surface),
+                    &window,
+                )
+            {
+                let focus_surface = self
+                    .pointer_contents
+                    .surface
+                    .as_ref()
+                    .map(|(surface, _)| surface.clone());
+                let start_data = compositor_pointer_grab_start_data(
+                    self.pointer_contents.surface.clone(),
+                    button,
+                    pointer.current_location(),
+                );
+                self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
+
+                if let Some(initial_window_location) = self.space.element_location(&window)
+                {
+                    let initial_window_size = window.geometry().size;
+                    let initial_window_rect = smithay::utils::Rectangle::new(
+                        initial_window_location,
+                        initial_window_size,
+                    );
+                    let initial_event_rect =
+                        self.managed_resize_initial_rect(&window, initial_window_rect);
+
+                    let pointer_loc = pointer.current_location();
+                    let window_rect = initial_window_rect;
+                    let center_x = window_rect.loc.x + window_rect.size.w / 2;
+                    let center_y = window_rect.loc.y + window_rect.size.h / 2;
+
+                    let mut edges = ResizeEdge::empty();
+                    if pointer_loc.x < center_x as f64 {
+                        edges |= ResizeEdge::LEFT;
+                    } else {
+                        edges |= ResizeEdge::RIGHT;
+                    }
+                    if pointer_loc.y < center_y as f64 {
+                        edges |= ResizeEdge::TOP;
+                    } else {
+                        edges |= ResizeEdge::BOTTOM;
+                    }
+
+                    if let Some(mut grab) = ResizeSurfaceGrab::start(
+                        start_data,
+                        window,
+                        edges,
+                        initial_window_rect,
+                        initial_event_rect,
+                        WindowResizeSourceSnapshot::Modifier,
+                    ) {
+                        grab.notify_start(self);
+                        pointer.set_grab(
+                            self,
+                            grab,
+                            serial,
+                            smithay::input::pointer::Focus::Clear,
+                        );
+                    }
+
+                    pointer.frame(self);
+                    let _ = self.display_handle.flush_clients();
+                    self.schedule_redraw();
+                    return;
+                }
+            }
+
+            if layer_under_pointer.is_none()
+                && let Some((window, hit)) =
+                    self.decoration_under(pointer.current_location())
+                && self.pointer_allows_window_interaction(
+                    self.pointer_contents
+                        .surface
+                        .as_ref()
+                        .map(|(surface, _)| surface),
+                    &window,
+                )
+            {
+                let focus_surface = self
+                    .pointer_contents
+                    .surface
+                    .as_ref()
+                    .map(|(surface, _)| surface.clone());
+                self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
+
+                match hit {
+                    DecorationHitTestResult::Action(WindowAction::Close) => {
+                        pointer.button(
+                            self,
+                            &ButtonEvent {
+                                button,
+                                state: button_state,
+                                serial,
+                                time: time_msec,
+                            },
+                        );
+                        if let Err(error) =
+                            crate::backend::tty::capture_live_snapshot_for_close(
+                                self, &window,
+                            )
+                        {
+                            warn!(
+                                ?error,
+                                "failed to capture decorated window before close request"
+                            );
+                        }
+                        if let Some(toplevel) = window.toplevel() {
+                            toplevel.send_close();
+                        }
+                    }
+                    DecorationHitTestResult::Action(WindowAction::Maximize) => {
+                        pointer.button(
+                            self,
+                            &ButtonEvent {
+                                button,
+                                state: button_state,
+                                serial,
+                                time: time_msec,
+                            },
+                        );
+                        self.request_window_maximize(
+                            &window,
+                            true,
+                            crate::ssd::WindowStateRequestSourceSnapshot::Api,
+                        );
+                    }
+                    DecorationHitTestResult::Action(WindowAction::Unmaximize) => {
+                        pointer.button(
+                            self,
+                            &ButtonEvent {
+                                button,
+                                state: button_state,
+                                serial,
+                                time: time_msec,
+                            },
+                        );
+                        self.request_window_maximize(
+                            &window,
+                            false,
+                            crate::ssd::WindowStateRequestSourceSnapshot::Api,
+                        );
+                    }
+                    DecorationHitTestResult::Action(WindowAction::Minimize) => {
+                        pointer.button(
+                            self,
+                            &ButtonEvent {
+                                button,
+                                state: button_state,
+                                serial,
+                                time: time_msec,
+                            },
+                        );
+                        self.request_window_minimize(
+                            &window,
+                            true,
+                            crate::ssd::WindowStateRequestSourceSnapshot::Api,
+                        );
+                    }
+                    DecorationHitTestResult::Action(WindowAction::RuntimeHandler(
+                        handler_id,
+                    )) => {
+                        pointer.button(
+                            self,
+                            &ButtonEvent {
+                                button,
+                                state: button_state,
+                                serial,
+                                time: time_msec,
+                            },
+                        );
+                        // The left button clicks; the right one is a
+                        // secondary click (`on_secondary_click`); the
+                        // others do nothing.
+                        let target = match button {
+                            272 => Some(handler_id.clone()),
+                            273 => Some(decoration_handler_variant(&handler_id, "secondary")),
+                            _ => None,
+                        };
+                        if let Some(target) = target {
+                            self.invoke_decoration_handler(&window, &target);
+                        }
+                    }
+                    DecorationHitTestResult::Move => {
+                        let start_data = compositor_pointer_grab_start_data(
+                            self.pointer_contents.surface.clone(),
+                            button,
+                            pointer.current_location(),
+                        );
+                        if let Some(initial_window_location) =
+                            self.space.element_location(&window)
+                        {
+                            let initial_window_rect = smithay::utils::Rectangle::new(
+                                initial_window_location,
+                                window.geometry().size,
+                            );
+                            let initial_event_rect = self
+                                .managed_resize_initial_rect(&window, initial_window_rect);
+                            let mut grab = MoveSurfaceGrab::start(
+                                start_data,
+                                window,
+                                initial_window_location,
+                                initial_event_rect,
+                                WindowMoveSourceSnapshot::Ssd,
+                            );
+                            grab.notify_start(self);
+                            pointer.set_grab(
+                                self,
+                                grab,
+                                serial,
+                                smithay::input::pointer::Focus::Clear,
+                            );
+                        }
+                    }
+                    DecorationHitTestResult::Resize(edges) => {
+                        let start_data = compositor_pointer_grab_start_data(
+                            self.pointer_contents.surface.clone(),
+                            button,
+                            pointer.current_location(),
+                        );
+                        if let Some(initial_window_location) =
+                            self.space.element_location(&window)
+                        {
+                            let initial_window_size = window.geometry().size;
+                            if let Some(toplevel) = window.toplevel() {
+                                toplevel.with_pending_state(|state| {
+                                    state.states.set(
+                                        smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Resizing,
+                                    );
+                                });
+                                toplevel.send_pending_configure();
+                            }
+
+                            let initial_window_rect = smithay::utils::Rectangle::new(
+                                initial_window_location,
+                                initial_window_size,
+                            );
+                            let initial_event_rect = self
+                                .managed_resize_initial_rect(&window, initial_window_rect);
+
+                            if let Some(mut grab) = ResizeSurfaceGrab::start(
+                                start_data,
+                                window,
+                                resize_edges_to_grab(edges),
+                                initial_window_rect,
+                                initial_event_rect,
+                                WindowResizeSourceSnapshot::Ssd,
+                            ) {
+                                grab.notify_start(self);
+                                pointer.set_grab(
+                                    self,
+                                    grab,
+                                    serial,
+                                    smithay::input::pointer::Focus::Clear,
+                                );
+                            }
+                        }
+                    }
+                    DecorationHitTestResult::ClientArea => {
+                        pointer.button(
+                            self,
+                            &ButtonEvent {
+                                button,
+                                state: button_state,
+                                serial,
+                                time: time_msec,
+                            },
+                        );
+                    }
+                    DecorationHitTestResult::Outside => {}
+                    DecorationHitTestResult::Popup => {}
+                }
+
+                pointer.frame(self);
+                let _ = self.display_handle.flush_clients();
+                self.schedule_redraw();
+                return;
+            } else if layer_under_pointer.is_none()
+                && let Some((window, _loc)) = self
+                    .window_under_transformed(LogicalPoint::new(
+                        pointer.current_location().x.floor() as i32,
+                        pointer.current_location().y.floor() as i32,
+                    ))
+                    .map(|(w, _)| (w.clone(), ()))
+                && self.pointer_allows_window_interaction(
+                    self.pointer_contents
+                        .surface
+                        .as_ref()
+                        .map(|(surface, _)| surface),
+                    &window,
+                )
+            {
+                let focus_surface = self
+                    .pointer_contents
+                    .surface
+                    .as_ref()
+                    .map(|(surface, _)| surface.clone());
+                self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
+            } else if let Some(layer) = layer_under_pointer {
+                if layer.can_receive_keyboard_focus() {
+                    self.focus_layer_surface_if_on_demand(Some(layer));
+                    self.update_keyboard_focus(serial);
+                } else if layer_focus_debug_enabled() {
+                    debug!(
+                        layer_surface_id = layer.wl_surface().id().protocol_id(),
+                        layer = ?layer.layer(),
+                        keyboard_interactivity =
+                            ?layer.cached_state().keyboard_interactivity,
+                        "leaving keyboard focus unchanged for non-interactive layer press"
+                    );
+                }
+            } else {
+                self.focus_layer_surface_if_on_demand(None);
+                self.update_keyboard_focus(serial);
+            }
+
+            if unfocused_popup_focus_debug_enabled() && button == 273 {
+                let pos = pointer.current_location();
+                let keyboard_focus = self
+                    .seat
+                    .get_keyboard()
+                    .and_then(|keyboard| keyboard.current_focus())
+                    .map(|surface| surface.id().protocol_id());
+                let pointer_target_after = self
+                    .surface_under(pos)
+                    .map(|(surface, origin)| (surface.id().protocol_id(), origin));
+                debug!(
+                    button,
+                    pointer_location = ?pos,
+                    keyboard_focus_surface = ?keyboard_focus,
+                    pointer_target_after = ?pointer_target_after,
+                    "unfocused popup focus debug: pointer press post-focus"
+                );
+            }
+        };
+
+        pointer.button(
+            self,
+            &ButtonEvent {
+                button,
+                state: button_state,
+                serial,
+                time: time_msec,
+            },
+        );
+        pointer.frame(self);
+        let _ = self.display_handle.flush_clients();
+        // Ensure the next redraw runs so frame callbacks flow to the clients that just
+        // received the button event. Without this, a button press on an idle surface
+        // (e.g. clicking a noctalia bar widget) does not trigger a render, so Quickshell
+        // can stall waiting for a wl_surface.frame callback before it even begins
+        // rendering the popup. Cursor motion has the same effect via the PointerMotion
+        // handler; doing it here keeps button and motion symmetric.
+        self.schedule_redraw();
+        if pointer_button_debug_enabled() {
+            debug!(
+                button,
+                state = ?button_state,
+                "pointer button forwarded and flushed"
+            );
+        }
+        if crate::env_flag!("SHOJI_RIGHT_CLICK_TRACE") && button == 273 {
+            debug!(
+                state = ?button_state,
+                pointer_location = ?pointer.current_location(),
+                "right click trace: button forwarded and flushed"
+            );
+        }
+    }
+
+    /// Pointer input a config asked for (`COMPOSITOR.input.synthesize_pointer`):
+    /// motion to `(x, y)`, then the button, if any, pressed or released, along
+    /// the same path as a device's, so tests can click decorations for real.
+    pub(crate) fn synthetic_pointer(&mut self, input: crate::runtime_api::SyntheticPointerInput) {
+        self.notify_idle_activity();
+        let Some(pos) = constrain_pointer_location_to_outputs(
+            Point::from((input.x, input.y)),
+            self.space.outputs().filter_map(|output| self.space.output_geometry(output)),
+        ) else {
+            return;
+        };
+        let now = std::time::Duration::from(self.clock.now());
+        let (time_msec, time_us) = (now.as_millis() as u32, now.as_micros() as u64);
+        self.handle_pointer_motion_absolute(pos, time_msec, time_us);
+        if let Some(button) = input.button {
+            let state = if input.pressed { ButtonState::Pressed } else { ButtonState::Released };
+            self.handle_pointer_button(button, state, time_msec);
         }
     }
 

@@ -3033,6 +3033,7 @@ impl ShojiWM {
                     self.apply_output_compositions(compositions);
                 }
                 HostMessage::InputGrab(update) => self.apply_runtime_input_grab_update(update),
+                HostMessage::SyntheticPointer(input) => self.synthetic_pointer(input),
                 HostMessage::CursorPosition(target) => self.set_cursor_position(target),
                 HostMessage::CursorOverride(kind) => {
                     if self.config_cursor_override != kind {

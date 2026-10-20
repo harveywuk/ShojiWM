@@ -17,7 +17,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use shojiwm_lib::{
     runtime_api::HostMessage,
-    runtime_input_grab::{InputGrabEventSnapshot, RuntimeInputGrabUpdate},
+    runtime_input_grab::{InputGrabEventSnapshot, PassthroughRect, RuntimeInputGrabUpdate},
     ssd::{GestureSwipeEventSnapshot, PointerModifierStateSnapshot, PointerMovePointSnapshot},
 };
 
@@ -99,6 +99,7 @@ pub struct InputGrabOptions {
     on_scroll: Handler<InputGrabScrollEvent>,
     on_swipe: Handler<GestureSwipeEventSnapshot>,
     on_cancel: Handler<InputGrabCancelReason>,
+    pointer_passthrough: Vec<crate::view::Rect>,
 }
 
 impl InputGrabOptions {
@@ -128,6 +129,15 @@ impl InputGrabOptions {
 
     pub fn on_swipe(mut self, f: impl Fn(&GestureSwipeEventSnapshot) + 'static) -> Self {
         self.on_swipe = Some(Rc::new(f));
+        self
+    }
+
+    /// Where (global logical px) the pointer passes through the grab:
+    /// decoration buttons, hover and scrolling there work as usual, and
+    /// only the keyboard and the pointer elsewhere come to the grab. See
+    /// [`InputGrab::set_pointer_passthrough`] to move it.
+    pub fn pointer_passthrough(mut self, rects: Vec<crate::view::Rect>) -> Self {
+        self.pointer_passthrough = rects;
         self
     }
 
@@ -168,7 +178,14 @@ impl InputGrab {
             }
         });
         if released {
-            send(self.id, false);
+            send(self.id, false, None);
+        }
+    }
+
+    /// Move the pointer passthrough (the panel grew, say).
+    pub fn set_pointer_passthrough(&self, rects: Vec<crate::view::Rect>) {
+        if self.is_active() {
+            send(self.id, true, Some(rects));
         }
     }
 
@@ -177,14 +194,18 @@ impl InputGrab {
     }
 }
 
-fn send(id: u64, active: bool) {
-    runtime::send(HostMessage::InputGrab(RuntimeInputGrabUpdate { id, active }));
+fn send(id: u64, active: bool, passthrough: Option<Vec<crate::view::Rect>>) {
+    let pointer_passthrough = passthrough.map(|rects| {
+        rects.into_iter().map(|r| PassthroughRect { x: r.x, y: r.y, width: r.width, height: r.height }).collect()
+    });
+    runtime::send(HostMessage::InputGrab(RuntimeInputGrabUpdate { id, active, pointer_passthrough }));
 }
 
 pub(crate) fn grab(options: InputGrabOptions) -> InputGrab {
     let id = NEXT_ID.with(|next| next.replace(next.get() + 1));
+    let passthrough = options.pointer_passthrough.clone();
     let previous = CURRENT.with(|current| current.borrow_mut().replace(ActiveGrab { id, options }));
-    send(id, true);
+    send(id, true, Some(passthrough));
     if let Some(on_cancel) = previous.and_then(|previous| previous.options.on_cancel) {
         on_cancel(&InputGrabCancelReason::Replaced);
     }
