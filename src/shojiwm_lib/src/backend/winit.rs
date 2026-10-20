@@ -1368,6 +1368,7 @@ pub fn init_winit(
                                     .unwrap_or(Duration::ZERO);
                             state.pre_repaint(&output, frame_target);
 
+                            bind_default_framebuffer_before_surface();
                             let render_started_at = Instant::now();
                             let render_output_result = {
                                 timescope::scope!("winit render_output");
@@ -6147,6 +6148,26 @@ fn winit_window_stack_elements(
             }
 
         }
+    }
+}
+
+/// Offscreen work while the scene is built (effect pipelines, snapshots)
+/// can leave the context current without a surface and with an offscreen
+/// framebuffer bound. Making the window surface current again from that
+/// state leaves the surface's draw and read buffers at `GL_NONE` on NVIDIA:
+/// the frame's clear and first draws go nowhere until something else makes
+/// the surface current, and the rest of the frame lands on an old one. The
+/// Island's and the dock's shadows showed drawn twice for a frame whenever
+/// the dock changed size. Binding the default framebuffer first avoids it.
+/// A raw call, so the context stays as it is; with the surface current it
+/// binds what is already bound.
+fn bind_default_framebuffer_before_surface() {
+    type BindFramebuffer = unsafe extern "C" fn(u32, u32);
+    const FRAMEBUFFER: u32 = 0x8D40;
+    unsafe {
+        let bind: BindFramebuffer =
+            std::mem::transmute(smithay::backend::egl::get_proc_address("glBindFramebuffer"));
+        bind(FRAMEBUFFER, 0);
     }
 }
 
