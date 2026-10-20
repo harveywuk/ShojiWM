@@ -282,9 +282,18 @@ impl ShojiWM {
         };
         self.drain_runtime_host_messages();
         self.apply_runtime_handler_invocation(window, &invocation);
-        if !invocation.invoked {
-            return false;
-        }
+        // The runtime hands over every window changed since its last reply,
+        // whether or not this handler still exists (a hover or press for a
+        // node just rebuilt has none): drop them and those windows never
+        // redraw again, their changes already taken.
+        let invoked = invocation.invoked;
+        self.apply_runtime_handler_mutation(invocation);
+        invoked
+    }
+
+    /// The windows changed and the actions queued that a handler invocation
+    /// carries, applied whether or not the handler ran.
+    pub(crate) fn apply_runtime_handler_mutation(&mut self, invocation: crate::ssd::DecorationHandlerInvocation) {
         self.mark_runtime_dirty_windows(
             invocation.dirty_window_ids,
             invocation.dirty_managed_window_ids,
@@ -293,7 +302,6 @@ impl ShojiWM {
         self.runtime_scheduler_enabled = invocation.next_poll_in_ms.is_some();
         self.apply_runtime_window_actions(invocation.actions);
         self.schedule_redraw();
-        true
     }
 
     fn notify_idle_activity(&mut self) {
@@ -3507,18 +3515,9 @@ impl ShojiWM {
         self.drain_runtime_host_messages();
         self.apply_runtime_handler_invocation(window, &invocation);
 
+        // Applied either way: see invoke_decoration_handler.
         let invoked = invocation.invoked;
-        if invoked {
-            self.mark_runtime_dirty_windows(
-                invocation.dirty_window_ids,
-                invocation.dirty_managed_window_ids,
-                &invocation.dirty_window_node_ids,
-            );
-            self.runtime_scheduler_enabled = invocation.next_poll_in_ms.is_some();
-            self.apply_runtime_window_actions(invocation.actions);
-            self.schedule_redraw();
-        }
-
+        self.apply_runtime_handler_mutation(invocation);
         invoked
     }
 
