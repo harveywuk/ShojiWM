@@ -3394,6 +3394,24 @@ impl ShojiWM {
             .collect()
     }
 
+    /// Decorations change shape under a pointer that does not move (a panel
+    /// shrinking away from it): what is hovered follows, as if it had moved,
+    /// instead of keeping a hover the pointer is no longer over. Checked
+    /// after every decoration refresh; a no-op when nothing under it changed.
+    pub(crate) fn refresh_decoration_hover(&mut self) {
+        if self.session_lock_active {
+            return;
+        }
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let pos = pointer.current_location();
+        if pointer.is_grabbed() || self.runtime_input_grab.as_ref().is_some_and(|grab| !grab.passes(pos.x, pos.y)) {
+            return;
+        }
+        self.update_decoration_hover_target(pos);
+    }
+
     fn update_decoration_hover_target(
         &mut self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
