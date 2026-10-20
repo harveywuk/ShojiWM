@@ -34,6 +34,10 @@ pub enum Easing {
     Linear,
     /// CSS `cubic-bezier(x1, y1, x2, y2)`.
     CubicBezier(f64, f64, f64, f64),
+    /// A damped spring (stiffness, damping, mass), as Hyprland's spring
+    /// curves: progress runs over its settle time, so give the animation
+    /// [`Easing::settle_ms`] as its duration to play it in real time.
+    Spring(f64, f64, f64),
 }
 
 impl Easing {
@@ -43,6 +47,17 @@ impl Easing {
     pub const EASE_IN_OUT: Self = Self::CubicBezier(0.42, 0.0, 0.58, 1.0);
     pub const EASE_OUT_CUBIC: Self = Self::CubicBezier(0.22, 1.0, 0.36, 1.0);
     pub const EASE_IN_OUT_CUBIC: Self = Self::CubicBezier(0.65, 0.0, 0.35, 1.0);
+
+    /// How long a spring takes to come to rest, in ms; `None` for a curve,
+    /// which takes whatever duration it is given.
+    pub fn settle_ms(self) -> Option<f64> {
+        match self {
+            Self::Spring(stiffness, damping, mass) => {
+                Some(shojiwm_lib::ssd::spring_settle_seconds(stiffness, damping, mass) * 1000.0)
+            }
+            _ => None,
+        }
+    }
 
     pub fn apply(self, progress: f64) -> f64 {
         let progress = clamp_unit(progress);
@@ -54,6 +69,9 @@ impl Easing {
                 }
                 cubic_bezier_y(x1, y1, x2, y2, progress)
             }
+            Self::Spring(stiffness, damping, mass) => {
+                ManagedWindowAnimationEasingSnapshot::spring_progress(stiffness, damping, mass, progress)
+            }
         }
     }
 }
@@ -63,6 +81,7 @@ impl From<Easing> for ManagedWindowAnimationEasingSnapshot {
         match easing {
             Easing::Linear => Self::Linear,
             Easing::CubicBezier(x1, y1, x2, y2) => Self::CubicBezier { x1, y1, x2, y2 },
+            Easing::Spring(stiffness, damping, mass) => Self::Spring { stiffness, damping, mass },
         }
     }
 }
@@ -70,6 +89,11 @@ impl From<Easing> for ManagedWindowAnimationEasingSnapshot {
 /// `cubicBezier(x1, y1, x2, y2)`.
 pub const fn cubic_bezier(x1: f64, y1: f64, x2: f64, y2: f64) -> Easing {
     Easing::CubicBezier(x1, y1, x2, y2)
+}
+
+/// A damped spring, as Hyprland's `type = "spring"` curves are written.
+pub const fn spring(stiffness: f64, damping: f64, mass: f64) -> Easing {
+    Easing::Spring(stiffness, damping, mass)
 }
 
 fn clamp_unit(value: f64) -> f64 {
@@ -983,6 +1007,19 @@ mod tests {
             previous = value;
         }
         assert!((Easing::Linear.apply(0.25) - 0.25).abs() < 1e-9);
+        // Hyprland's default "easy" spring: most of the way early, a
+        // slight overshoot, at rest by its settle time.
+        let easy = spring(238.1191, 24.21279333, 1.0);
+        let settle = easy.settle_ms().unwrap();
+        assert!((500.0..700.0).contains(&settle), "{settle}");
+        assert!(easy.apply(0.25) > 0.7, "three quarters there a quarter of the way in");
+        let peak = (1..100).map(|i| easy.apply(i as f64 / 100.0)).fold(0.0, f64::max);
+        assert!((1.005..1.04).contains(&peak), "{peak}");
+        assert_eq!((easy.apply(0.0), easy.apply(1.0)), (0.0, 1.0));
+        // Overdamped: never past the target.
+        let slow = spring(100.0, 40.0, 1.0);
+        assert!((1..100).all(|i| slow.apply(i as f64 / 100.0) <= 1.0));
+        assert!((0.998..=1.0).contains(&slow.apply(0.999)), "at rest by its settle time");
     }
 
     #[test]

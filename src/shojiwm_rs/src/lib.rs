@@ -91,7 +91,7 @@ pub mod prelude {
         COMPOSITOR, ConfigBuilder, run_config,
         animation::{
             Animation, AnimationOptions, Easing, PollHandle, PollOutput, Repeat, TimerHandle,
-            create_poll, create_poll_for_each_output, cubic_bezier, now_ms, set_interval,
+            create_poll, create_poll_for_each_output, cubic_bezier, now_ms, set_interval, spring,
             set_timeout,
         },
         compositor::{

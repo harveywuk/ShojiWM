@@ -6016,6 +6016,9 @@ fn sample_easing(easing: ManagedWindowAnimationEasingSnapshot, progress: f64) ->
         ManagedWindowAnimationEasingSnapshot::CubicBezier { x1, y1, x2, y2 } => {
             sample_cubic_bezier(x1, y1, x2, y2, progress)
         }
+        ManagedWindowAnimationEasingSnapshot::Spring { stiffness, damping, mass } => {
+            ManagedWindowAnimationEasingSnapshot::spring_progress(stiffness, damping, mass, progress)
+        }
     }
 }
 

@@ -53,7 +53,7 @@ pub use popup::{
 };
 pub use window_model::{
     GesturePinchEventSnapshot, GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, LayerKindSnapshot, LayerPositionSnapshot,
-    ManagedWindowAnimationEasingSnapshot, ManagedWindowAnimationMode,
+    ManagedWindowAnimationEasingSnapshot, ManagedWindowAnimationMode, spring_position, spring_settle_seconds,
     ManagedWindowAnimationSnapshot, ManagedWindowPointAnimationSnapshot,
     ManagedWindowPointSnapshot, ManagedWindowRectAnimationSnapshot, ManagedWindowRectSnapshot,
     HdmiLinkSnapshot, ManagedWindowScalarAnimationSnapshot, ManagedWindowState, OutputModeSnapshot,
