@@ -18,7 +18,7 @@
 //! ```
 
 use shojiwm_lib::ssd::{
-    AlignItems, BorderFit, BorderStyle, BoxShadow, Color, DecorationStyle, Edges, JustifyContent,
+    AlignItems, BorderFit, BorderStyle, BoxShadow, Color, DecorationStyle, Edges, JustifyContent, LinearGradient,
     NodeTransform, Overflow, PointerEvents, PositionOffsets, StylePosition,
 };
 
@@ -101,6 +101,13 @@ pub const fn shadow(x: f64, y: f64, blur: f64, color: Color) -> BoxShadow {
         color,
         inset: false,
     }
+}
+
+/// A CSS-like `linear-gradient(angle, colors…)` for
+/// [`Style::background_gradient`]: `angle` in degrees (0 runs to the top, 90
+/// to the right), up to four colours spread evenly.
+pub fn linear_gradient(angle: f64, colors: impl IntoIterator<Item = Color>) -> LinearGradient {
+    LinearGradient::new(angle as f32, colors)
 }
 
 /// Like [`shadow`], drawn inside the padding box.
@@ -222,6 +229,8 @@ style_fields! {
     justify_content: JustifyContent,
     align_items: AlignItems,
     background: Color,
+    /// A linear gradient painted as the background ([`linear_gradient`]).
+    background_gradient: LinearGradient,
     color: Color,
     opacity: f32,
     /// Blurs the node's text and images, and everything inside it, by this
@@ -348,6 +357,7 @@ impl Style {
             justify_content: read(&self.justify_content),
             align_items: read(&self.align_items),
             background: read(&self.background),
+            background_gradient: read(&self.background_gradient),
             color: read(&self.color),
             opacity: read(&self.opacity),
             blur: read(&self.blur).map(|blur| blur as f32),

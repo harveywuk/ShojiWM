@@ -1478,6 +1478,8 @@ pub struct DecorationStyle {
     pub justify_content: Option<JustifyContent>,
     pub align_items: Option<AlignItems>,
     pub background: Option<Color>,
+    /// A linear gradient painted as the background (over `background`).
+    pub background_gradient: Option<LinearGradient>,
     pub color: Option<Color>,
     pub opacity: Option<f32>,
     /// Standard deviation (logical px) of a blur of the node's text and
@@ -1507,6 +1509,45 @@ pub struct DecorationStyle {
     pub paint: Option<PaintShader>,
     /// Painted above the node's children.
     pub overlay: Option<PaintShader>,
+}
+
+/// A CSS-like `linear-gradient`: `angle` in degrees (0 runs to the top, 90
+/// to the right, as CSS) through up to [`LinearGradient::MAX_STOPS`] colour
+/// stops, each at an offset from 0 to 1 along it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinearGradient {
+    pub angle: f32,
+    pub stops: Vec<GradientStop>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GradientStop {
+    pub offset: f32,
+    pub color: Color,
+}
+
+impl LinearGradient {
+    /// The stops the built-in paint program draws; more are dropped.
+    pub const MAX_STOPS: usize = 4;
+
+    /// `colors` spread evenly from start to end.
+    pub fn new(angle: f32, colors: impl IntoIterator<Item = Color>) -> Self {
+        let colors: Vec<Color> = colors.into_iter().collect();
+        let last = colors.len().saturating_sub(1).max(1) as f32;
+        Self {
+            angle,
+            stops: colors
+                .into_iter()
+                .enumerate()
+                .map(|(index, color)| GradientStop { offset: index as f32 / last, color })
+                .collect(),
+        }
+    }
+
+    /// Whether it draws anything.
+    pub fn is_visible(&self) -> bool {
+        self.stops.iter().any(|stop| stop.color.a > 0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

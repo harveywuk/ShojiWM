@@ -40,6 +40,14 @@ uniform vec2 shoji_shadow_offset;
 uniform float shoji_shadow_sigma;
 uniform float shoji_shadow_spread;
 uniform float shoji_shadow_inset;
+// A linear background gradient (premultiplied stops); none when the count is 0.
+uniform float shoji_gradient_count;
+uniform float shoji_gradient_angle;   // radians: 0 runs to the top, as CSS
+uniform vec4 shoji_gradient_offsets;
+uniform vec4 shoji_gradient_color_0;
+uniform vec4 shoji_gradient_color_1;
+uniform vec4 shoji_gradient_color_2;
+uniform vec4 shoji_gradient_color_3;
 
 struct PaintContext {
     vec2 frag_phy_px;          // this fragment, from the node's top-left (pixel centers at .5)
@@ -198,8 +206,32 @@ vec4 shoji_premultiply(vec4 color) {
 }
 
 // The built-in look: background, then border.
+// The background at this fragment: the gradient along its angle (CSS's
+// gradient line, through the box's centre, as long as its projection), else
+// the colour.
+vec4 shoji_fill_color(PaintContext ctx) {
+    if (shoji_gradient_count < 0.5) {
+        return ctx.background;
+    }
+    vec2 dir = vec2(sin(shoji_gradient_angle), -cos(shoji_gradient_angle));
+    float len = abs(ctx.size_phy_px.x * dir.x) + abs(ctx.size_phy_px.y * dir.y);
+    float t = clamp(dot(ctx.frag_phy_px - ctx.size_phy_px * 0.5, dir) / max(len, 0.001) + 0.5, 0.0, 1.0);
+    vec4 o = shoji_gradient_offsets;
+    vec4 color = shoji_gradient_color_0;
+    if (shoji_gradient_count > 1.5) {
+        color = mix(color, shoji_gradient_color_1, clamp((t - o.x) / max(o.y - o.x, 0.0001), 0.0, 1.0));
+    }
+    if (shoji_gradient_count > 2.5) {
+        color = mix(color, shoji_gradient_color_2, clamp((t - o.y) / max(o.z - o.y, 0.0001), 0.0, 1.0));
+    }
+    if (shoji_gradient_count > 3.5) {
+        color = mix(color, shoji_gradient_color_3, clamp((t - o.z) / max(o.w - o.z, 0.0001), 0.0, 1.0));
+    }
+    return color;
+}
+
 vec4 shoji_default_paint(PaintContext ctx) {
-    vec4 fill = ctx.background * shoji_fill_coverage(ctx);
+    vec4 fill = shoji_fill_color(ctx) * shoji_fill_coverage(ctx);
     vec4 border = shoji_border_color_at(ctx) * shoji_border_coverage(ctx);
     return shoji_over(border, fill);
 }

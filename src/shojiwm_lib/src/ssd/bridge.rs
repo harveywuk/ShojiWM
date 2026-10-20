@@ -1289,6 +1289,8 @@ impl TryFrom<WireStyle> for DecorationStyle {
                 .transpose()?,
             align_items: value.align_items.map(parse_align_items).transpose()?,
             background: value.background.map(|s| parse_color(&s)).transpose()?,
+            // The TypeScript style has no gradients yet.
+            background_gradient: None,
             color: value.color.map(|s| parse_color(&s)).transpose()?,
             opacity: value.opacity,
             blur: value.blur,

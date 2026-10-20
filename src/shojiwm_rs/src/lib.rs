@@ -129,7 +129,7 @@ pub mod prelude {
             Get, Memo, Prop, ReadSignal, Scope, Signal, batch, derive, effect, memo, on_cleanup,
             signal, untrack,
         },
-        style::{Border, FontWeight, Style, Transform2D, hex, inset_shadow, rgba, shadow},
+        style::{Border, FontWeight, Style, Transform2D, hex, inset_shadow, linear_gradient, rgba, shadow},
         view::{
             AppIcon, Button, Child, ClientWindow, Composition, Direction, Element, Flex, Image,
             Label, ManagedTransform, ManagedWindow, Popup, PopupTrigger, Rect, ScrollEvent, ShaderEffect, WindowBorder,
@@ -138,7 +138,7 @@ pub mod prelude {
         window_stack::{Placement, WindowStack},
     };
     pub use shojiwm_lib::ssd::{
-        AlignItems, BlendMode, BoxShadow, Color, EffectRegion, ImageFit, JustifyContent, Overflow,
+        AlignItems, BlendMode, BoxShadow, Color, EffectRegion, GradientStop, ImageFit, JustifyContent, LinearGradient, Overflow,
         PointerEvents, PopupAlign, PopupCollision, PopupDismissReason, PopupLayer, PopupPlacement, PopupMode,
         StylePosition, WindowAction,
     };

@@ -177,11 +177,41 @@ pub enum PaintProgram {
     Custom(ShaderModule),
 }
 
+/// A background gradient as the built-in program draws it: its angle (in
+/// radians) and up to four stops, unused ones repeating the last.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GradientPx {
+    pub angle: f32,
+    pub count: u32,
+    pub offsets: [f32; 4],
+    pub colors: [Color; 4],
+}
+
+impl GradientPx {
+    fn of(gradient: &super::LinearGradient) -> Option<Self> {
+        let stops: Vec<_> = gradient.stops.iter().take(super::LinearGradient::MAX_STOPS).copied().collect();
+        let last = *stops.last()?;
+        let (mut offsets, mut colors) = ([0.0f32; 4], [last.color; 4]);
+        let mut previous = 0.0f32;
+        for index in 0..4 {
+            // Offsets never go back, as CSS's; the unused slots hold the last.
+            if let Some(stop) = stops.get(index) {
+                previous = stop.offset.clamp(0.0, 1.0).max(previous);
+                colors[index] = stop.color;
+            }
+            offsets[index] = previous;
+        }
+        Some(Self { angle: gradient.angle.to_radians(), count: stops.len() as u32, offsets, colors })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaintItem {
     pub program: PaintProgram,
     pub geometry: PaintGeometry,
     pub background: Color,
+    /// Drawn instead of `background` when set.
+    pub gradient: Option<GradientPx>,
     /// `[top, right, bottom, left]`.
     pub border_colors: [Color; 4],
     pub opacity: f32,
@@ -202,7 +232,7 @@ impl PaintItem {
         let (rect, radius) = match self.program {
             PaintProgram::Shadow(shadow) if !shadow.inset => (g.node, g.radius),
             PaintProgram::Box { fill, .. }
-                if !fill || g.hole || self.background.a == 0 =>
+                if !fill || g.hole || (self.background.a == 0 && self.gradient.is_none()) =>
             {
                 (g.inner, g.inner_radius)
             }
@@ -266,6 +296,19 @@ fn effective_background(node: &ComputedDecorationNode) -> Option<Color> {
     node.style.background.filter(|color| color.a > 0)
 }
 
+fn effective_gradient(node: &ComputedDecorationNode) -> Option<GradientPx> {
+    node.style
+        .background_gradient
+        .as_ref()
+        .filter(|gradient| gradient.is_visible())
+        .and_then(GradientPx::of)
+}
+
+/// A background colour or gradient to fill with.
+fn fills(node: &ComputedDecorationNode) -> bool {
+    effective_background(node).is_some() || effective_gradient(node).is_some()
+}
+
 fn visible_border(node: &ComputedDecorationNode) -> bool {
     node.style
         .border_sides()
@@ -288,7 +331,7 @@ pub(crate) fn back_slots(node: &ComputedDecorationNode) -> Vec<PaintSlot> {
     }
     let is_effect = matches!(node.kind, DecorationNodeKind::ShaderEffect(_));
     let custom = node.style.paint.is_some();
-    let builtin_box = !custom && (effective_background(node).is_some() || visible_border(node));
+    let builtin_box = !custom && (fills(node) || visible_border(node));
     let inset = node
         .style
         .box_shadow
@@ -312,7 +355,7 @@ pub(crate) fn back_slots(node: &ComputedDecorationNode) -> Vec<PaintSlot> {
         }
         slots.extend(inset);
         // The `<ShaderEffect>` pipeline itself sits here (`:shader`).
-        if !custom && effective_background(node).is_some() {
+        if !custom && fills(node) {
             slots.push(PaintSlot::Fill);
         }
     } else {
@@ -499,6 +542,7 @@ pub(crate) fn paint_item(
 ) -> Option<PaintItem> {
     let scale = node.frame.scale;
     let background = effective_background(node).unwrap_or(Color::TRANSPARENT);
+    let gradient = effective_gradient(node);
     let border_colors = node.style.border_sides().map(|side| {
         side.filter(|border| border.width > 0.0)
             .map(|border| border.color)
@@ -509,6 +553,7 @@ pub(crate) fn paint_item(
         program,
         geometry,
         background,
+        gradient,
         border_colors,
         opacity,
         uniforms,
@@ -517,7 +562,7 @@ pub(crate) fn paint_item(
     match slot {
         PaintSlot::Box => Some(item(
             PaintProgram::Box {
-                fill: background.a > 0,
+                fill: background.a > 0 || gradient.is_some(),
                 border: visible_border(node),
             },
             geometry,

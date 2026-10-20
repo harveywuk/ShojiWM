@@ -8489,6 +8489,43 @@ mod tests {
     };
 
     #[test]
+    fn a_gradient_alone_fills_the_box() {
+        use super::super::{GradientStop, LinearGradient, paint::PaintProgram};
+        let gradient = LinearGradient {
+            angle: 90.0,
+            stops: vec![
+                GradientStop { offset: 0.0, color: Color::rgba(0, 0, 255, 255) },
+                GradientStop { offset: 0.8, color: Color::rgba(0, 255, 0, 255) },
+                // Before the previous one: held at it, as CSS.
+                GradientStop { offset: 0.5, color: Color::rgba(255, 0, 0, 255) },
+            ],
+        };
+        let mut bar = DecorationNode::new(DecorationNodeKind::Box(BoxNode { direction: LayoutDirection::Row })).with_style(DecorationStyle {
+            width: Some(60.0),
+            height: Some(4.0),
+            border_radius: Some(2.0),
+            background_gradient: Some(gradient),
+            ..Default::default()
+        });
+        bar.stable_id = Some("bar".into());
+        let layout = DecorationTree::new(
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode { direction: LayoutDirection::Column }))
+                .with_children(vec![bar, DecorationNode::new(DecorationNodeKind::WindowSlot)]),
+        )
+        .layout_for_client(LogicalRect::new(0, 20, 100, 100))
+        .unwrap();
+        let buffers = paint_buffers_for_layout(&layout);
+        let item = buffers.iter().find(|buffer| buffer.owner_node_id.as_deref() == Some("bar")).expect("the bar paints");
+        assert!(matches!(item.paint.program, PaintProgram::Box { fill: true, .. }), "a gradient fills without a colour");
+        let gradient = item.paint.gradient.expect("its gradient");
+        assert_eq!(gradient.count, 3);
+        assert_eq!(gradient.offsets, [0.0, 0.8, 0.8, 0.8]);
+        assert!((gradient.angle - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(gradient.colors[3], Color::rgba(255, 0, 0, 255), "unused stops repeat the last");
+        assert!(item.paint.transparent_interior().is_none(), "a filled gradient has no hollow middle");
+    }
+
+    #[test]
     fn pending_label_recolor_keeps_old_pixel_metadata_until_rasterized() {
         use crate::backend::{async_assets::AsyncAssetJob, text::TextRasterizer};
         let layout = |text: &str, color| {

@@ -61,6 +61,11 @@ fn builtin_uniform_names() -> Vec<UniformName<'static>> {
         "shoji_rounded_clip_rect",
         "shoji_rounded_clip_radius",
         "shoji_shadow_color",
+        "shoji_gradient_color_0",
+        "shoji_gradient_color_1",
+        "shoji_gradient_color_2",
+        "shoji_gradient_color_3",
+        "shoji_gradient_offsets",
     ];
     let float = [
         "shoji_hole",
@@ -73,6 +78,8 @@ fn builtin_uniform_names() -> Vec<UniformName<'static>> {
         "shoji_shadow_sigma",
         "shoji_shadow_spread",
         "shoji_shadow_inset",
+        "shoji_gradient_count",
+        "shoji_gradient_angle",
     ];
     vec4.into_iter()
         .map(|name| UniformName::new(name, UniformType::_4f))
@@ -241,6 +248,16 @@ fn uniforms_for_item(item: &PaintItem) -> Vec<Uniform<'static>> {
         _ => (false, false),
     };
     uniforms.push(Uniform::new("shoji_box_fill", if fill { 1.0f32 } else { 0.0 }));
+    let gradient = item.gradient;
+    uniforms.push(Uniform::new("shoji_gradient_count", gradient.map_or(0.0f32, |gradient| gradient.count as f32)));
+    uniforms.push(Uniform::new("shoji_gradient_angle", gradient.map_or(0.0f32, |gradient| gradient.angle)));
+    uniforms.push(Uniform::new("shoji_gradient_offsets", gradient.map_or([0.0f32; 4], |gradient| gradient.offsets)));
+    for index in 0..4 {
+        uniforms.push(Uniform::new(
+            format!("shoji_gradient_color_{index}"),
+            gradient.map_or([0.0f32; 4], |gradient| premultiplied(gradient.colors[index])),
+        ));
+    }
     uniforms.push(Uniform::new("shoji_box_border", if border { 1.0f32 } else { 0.0 }));
 
     let shadow = match item.program {
