@@ -53,6 +53,7 @@ enum KeyboardAction {
     ChangeVt(i32),
     /// Escape closes the most recent `Auto` SSD popup.
     DismissPopup,
+    CancelDrag,
 }
 
 fn compositor_pointer_grab_start_data(
@@ -1093,6 +1094,20 @@ impl ShojiWM {
                                 }
                             }
 
+                            if data.dnd.active.is_some()
+                                && matches!(
+                                    key_phase,
+                                    crate::runtime_key_binding::RuntimeKeyBindingPhase::Press
+                                )
+                                && !modifiers.ctrl
+                                && !modifiers.alt
+                                && !modifiers.logo
+                                && handle.raw_latin_sym_or_raw_current_sym()
+                                    .is_some_and(|key| key.raw() == keysyms::KEY_Escape)
+                            {
+                                return FilterResult::Intercept(KeyboardAction::CancelDrag);
+                            }
+
                             // An input grab takes every key, except the
                             // compositor's own escape hatches (quit, reload,
                             // VT switch). Releases of keys held when the grab
@@ -1255,6 +1270,11 @@ impl ShojiWM {
                 match action {
                     KeyboardAction::Quit => self.shutdown(),
                     KeyboardAction::DismissPopup => self.dismiss_popup_on_escape(),
+                    KeyboardAction::CancelDrag => {
+                        if let Some(pointer) = self.seat.get_pointer() {
+                            pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), time);
+                        }
+                    }
                     KeyboardAction::ReloadConfig => self.reload_decoration_runtime(),
                     KeyboardAction::RuntimeKeyBinding(binding_id) => {
                         self.run_runtime_key_binding(&binding_id);

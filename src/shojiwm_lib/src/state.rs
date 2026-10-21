@@ -759,6 +759,20 @@ impl ShojiWM {
         let layer = surface
             .as_ref()
             .and_then(|(surface, _)| self.layer_surface_for_hit_surface(surface));
+        // Native drop controls receive data in the compositor. Do not offer
+        // it to their transparent anchor client (which has no data device).
+        if !self.session_lock_active
+            && self.dnd.active.is_some()
+            && layer.is_none()
+            && matches!(
+                self.decoration_under(pos),
+                Some((_, crate::ssd::DecorationHitTestResult::Action(
+                    crate::ssd::WindowAction::RuntimeHandler(id)
+                ))) if id.ends_with(crate::dnd::DROP_SUFFIX)
+            )
+        {
+            return PointerContents::default();
+        }
         PointerContents { surface, layer }
     }
 
@@ -3070,6 +3084,10 @@ impl ShojiWM {
                     }
                 }
                 HostMessage::DragView(command) => self.apply_drag_view_command(command),
+                HostMessage::StartCopyDrag { id, mime_type, data } => {
+                    self.start_copy_drag(id, mime_type, data)
+                }
+                HostMessage::CancelCopyDrag(id) => self.cancel_copy_drag(id),
                 HostMessage::BackgroundEffect(config) => {
                     if self.configured_background_effect != config {
                         self.configured_background_effect = config;

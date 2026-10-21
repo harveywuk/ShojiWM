@@ -99,6 +99,9 @@ pub enum HostMessage {
     CursorOverride(Option<crate::cursor::CursorOverride>),
     /// Show, move, restyle or dispose of a drag view (`drag.show()`).
     DragView(crate::dnd::DragViewCommand),
+    /// Start a copy-only data offer from a native control during a pointer drag.
+    StartCopyDrag { id: u64, mime_type: String, data: Vec<u8> },
+    CancelCopyDrag(u64),
 }
 
 /// When a runtime that keeps a clock per output (see `SchedulerTickRequest`)

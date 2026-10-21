@@ -51,6 +51,16 @@ use crate::{
     window::Window,
 };
 
+/// A copy-only drag started by a native control. Cancellation is scoped to
+/// this handle; it cannot cancel a later drag or one owned by an application.
+#[derive(Clone, Copy, Debug)]
+pub struct CopyDrag(u64);
+impl CopyDrag {
+    pub fn cancel(self) {
+        runtime::send(HostMessage::CancelCopyDrag(self.0));
+    }
+}
+
 /// How a drag ended.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DragEnd {
@@ -450,6 +460,24 @@ impl DndController {
             registry.listeners.dnd_start.push(Rc::new(listener));
             registry.pending.event_filter = true;
         });
+    }
+
+    /// Offer bounded in-memory data from a native control while the left
+    /// pointer button is held. Release the control's pointer grab (or pass
+    /// pointer events through it) before starting. The source only permits
+    /// Copy; receivers never gain permission to remove source files.
+    pub fn start_copy(&self, mime_type: &str, data: Vec<u8>) -> Option<CopyDrag> {
+        if mime_type.is_empty() || mime_type.len() > 256 || data.len() > 1 << 20 {
+            return None;
+        }
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        runtime::send(HostMessage::StartCopyDrag {
+            id,
+            mime_type: mime_type.into(),
+            data,
+        });
+        Some(CopyDrag(id))
     }
 
     /// The drag in progress (tracked).

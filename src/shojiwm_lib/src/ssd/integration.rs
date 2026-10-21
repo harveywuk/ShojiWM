@@ -351,9 +351,14 @@ fn apply_cached_tree_update(
         (Some(_), false) => Err(DecorationEvaluationError::RuntimeProtocol(
             "cached composition returned both a full tree and patches".into(),
         )),
-        (None, true) => Err(DecorationEvaluationError::RuntimeProtocol(
-            "cached composition returned neither a full tree nor patches".into(),
-        )),
+        // A cached runtime can be polled after another evaluation consumed its
+        // dirty nodes, or because only its effects changed. An empty patch list
+        // retains the tree; rejecting it aborts the whole output refresh and
+        // prevents later windows from receiving their first evaluation.
+        (None, true) => Ok(CachedTreeUpdate {
+            changed: false,
+            layout_equivalent: true,
+        }),
         (None, false) => {
             let mut changed = false;
             let mut layout_equivalent = true;
@@ -9071,6 +9076,17 @@ mod tests {
         assert!(node_id_matches_dirty_scope("w1/0/2", &dirty));
         assert!(!node_id_matches_dirty_scope("w1/0/21", &dirty));
         assert!(!node_id_matches_dirty_scope("root.Box#barista", &dirty));
+    }
+
+    #[test]
+    fn cached_tree_empty_update_retains_the_tree() {
+        let root = DecorationNode::new(DecorationNodeKind::WindowSlot);
+        let mut tree = DecorationTree::new(root.clone());
+        let update = apply_cached_tree_update(&mut tree, None, Vec::new())
+            .expect("an unchanged cached composition is valid");
+        assert!(!update.changed);
+        assert!(update.layout_equivalent);
+        assert_eq!(tree.root, root);
     }
 
     #[test]
