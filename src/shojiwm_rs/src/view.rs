@@ -719,6 +719,7 @@ pub struct ManagedWindow {
     tiled: Option<Prop<bool>>,
     allow_tearing: Option<Prop<bool>>,
     z_index: Option<Prop<i32>>,
+    keyboard_focus: Option<Prop<bool>>,
     opacity: Option<Prop<f64>>,
     transform: Option<Prop<ManagedTransform>>,
     children: Vec<Child>,
@@ -754,6 +755,10 @@ managed_props! {
     /// Allow tearing page flips while the window is scanned out directly.
     allow_tearing: bool,
     z_index: i32,
+    /// Whether a press on the window gives it the keyboard (default true):
+    /// a config's own surfaces turn it off, so a click on them leaves the
+    /// user's app focused.
+    keyboard_focus: bool,
     opacity: f64,
     transform: ManagedTransform,
 }
@@ -809,6 +814,7 @@ impl ManagedWindow {
             tiled: read(&self.tiled).unwrap_or(false),
             allow_tearing: read(&self.allow_tearing),
             z_index: read(&self.z_index),
+            keyboard_focus: read(&self.keyboard_focus).unwrap_or(true),
             transform: WindowTransform {
                 origin: TransformOrigin {
                     x: transform.origin_x,

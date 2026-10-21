@@ -1470,6 +1470,7 @@ impl ShojiRuntimeBridge {
                 tiled: flags & (1 << 6) != 0,
                 allow_tearing,
                 z_index: (flags & (1 << 11) != 0).then_some(fields[14] as i32),
+                keyboard_focus: true,
                 surface_policy: (flags & (1 << 12) != 0).then_some(shojiwm_lib::ssd::SurfacePolicy {
                     opaque_region: shojiwm_lib::ssd::OpaqueRegionPolicy::Ignore,
                 }),

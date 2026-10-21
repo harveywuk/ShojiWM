@@ -3613,6 +3613,12 @@ impl ShojiWM {
         surface: Option<&smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
         serial: Serial,
     ) {
+        // A config's own surface that declines the keyboard (an island, a
+        // dock): a press on it leaves the focused app focused, and does not
+        // count as using the window.
+        if self.window_decorations.get(window).is_some_and(|decoration| !decoration.managed_window.keyboard_focus) {
+            return;
+        }
         self.note_window_user_input(window);
         self.grant_window_keyboard_focus(window, surface, serial);
     }

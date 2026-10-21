@@ -860,6 +860,11 @@ pub struct ManagedWindowState {
     pub allow_tearing: Option<bool>,
     #[serde(default)]
     pub z_index: Option<i32>,
+    /// Whether a press on the window gives it the keyboard. A config's own
+    /// surfaces (an island, a dock) turn it off, so a click on them leaves
+    /// the user's app focused.
+    #[serde(default = "default_true")]
+    pub keyboard_focus: bool,
     #[serde(default)]
     pub transform: WindowTransform,
     /// Rendering policy for the window's client surface tree from
@@ -884,6 +889,7 @@ impl Default for ManagedWindowState {
             tiled: false,
             allow_tearing: None,
             z_index: None,
+            keyboard_focus: true,
             transform: WindowTransform::default(),
             surface_policy: None,
         }
