@@ -459,9 +459,10 @@ pub struct ShojiWM {
     /// Night light's colour temperature in kelvin
     /// (`COMPOSITOR.output.set_night_light`); `None` while it is off.
     pub night_light: Option<f32>,
-    /// Per output, the LUT night light runs there, with the temperature and
-    /// the profile (by `IccLut::id`) it was built for.
-    pub night_light_luts: HashMap<String, (f32, Option<u64>, std::sync::Arc<crate::color::icc::IccLut>)>,
+    /// The LUTs night light runs, by the profile they are composed with (by
+    /// `IccLut::id`; `None` for outputs without one, which share theirs),
+    /// with the temperature each was built for.
+    pub night_light_luts: HashMap<Option<u64>, (f32, std::sync::Arc<crate::color::icc::IccLut>)>,
     pub managed_window_animations: HashMap<String, BTreeMap<String, ActiveManagedWindowAnimation>>,
     pub managed_window_animation_sequence: u64,
     pub runtime_output_configs: std::collections::BTreeMap<String, RuntimeOutputConfig>,
@@ -5150,13 +5151,13 @@ impl ShojiWM {
             return profile;
         };
         let profile_id = profile.as_ref().map(|profile| profile.id);
-        if let Some((built_for, built_with, lut)) = self.night_light_luts.get(name) {
-            if *built_for == kelvin && *built_with == profile_id {
+        if let Some((built_for, lut)) = self.night_light_luts.get(&profile_id) {
+            if *built_for == kelvin {
                 return Some(lut.clone());
             }
         }
         let lut = std::sync::Arc::new(crate::color::night_light::lut(kelvin, profile.as_deref()));
-        self.night_light_luts.insert(name.to_owned(), (kelvin, profile_id, lut.clone()));
+        self.night_light_luts.insert(profile_id, (kelvin, lut.clone()));
         Some(lut)
     }
 
