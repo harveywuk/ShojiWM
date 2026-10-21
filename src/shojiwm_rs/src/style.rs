@@ -252,6 +252,9 @@ style_fields! {
     font_weight: FontWeight,
     font_family: Vec<String>,
     text_align: String,
+    /// `"ellipsis"`: text wider than the label ends in "…" instead of
+    /// being cut mid-glyph.
+    text_overflow: String,
     line_height: f64,
 }
 
@@ -377,7 +380,7 @@ impl Style {
             }),
             font_family: read(&self.font_family),
             text_align: read(&self.text_align),
-            text_overflow: None,
+            text_overflow: read(&self.text_overflow),
             line_height: read(&self.line_height),
             box_shadow: read(&self.box_shadow).unwrap_or_default(),
             paint: None,

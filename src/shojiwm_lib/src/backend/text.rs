@@ -278,9 +278,16 @@ impl TextRasterizer {
 
         let mut pixels = vec![0u8; (full_width * full_height * 4) as usize];
         let text_color = CosmicColor::rgba(spec.color.r, spec.color.g, spec.color.b, spec.color.a);
+        // cosmic-text hands each glyph pixel the colour with its alpha
+        // replaced by the glyph's coverage: the colour's own alpha has to be
+        // applied here, or a translucent text colour (a secondary label)
+        // draws fully opaque.
+        let text_alpha = u16::from(spec.color.a);
         {
             let mut buffer = buffer.borrow_with(&mut self.font_system);
             buffer.draw(&mut self.swash_cache, text_color, |x, y, w, h, color| {
+                let (r, g, b, coverage) = color.as_rgba_tuple();
+                let rgba = (r, g, b, ((u16::from(coverage) * text_alpha) / 255) as u8);
                 for off_y in 0..h as i32 {
                     for off_x in 0..w as i32 {
                         let px = x + off_x;
@@ -288,7 +295,7 @@ impl TextRasterizer {
                         if px < 0 || py < 0 || px >= target_width || py >= target_height {
                             continue;
                         }
-                        blend_pixel(&mut pixels, full_width, px + pad, py + pad, color.as_rgba_tuple());
+                        blend_pixel(&mut pixels, full_width, px + pad, py + pad, rgba);
                     }
                 }
             });
