@@ -115,12 +115,18 @@ impl IccLut {
             }
         }
 
+        Ok(Self::from_data(path.to_path_buf(), data))
+    }
+
+    /// A LUT over `data` (`LUT_SIZE`³ values, red fastest) with a new id.
+    pub fn from_data(path: PathBuf, data: Vec<[f32; 3]>) -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        Ok(Self {
+        debug_assert_eq!(data.len(), LUT_SIZE * LUT_SIZE * LUT_SIZE);
+        Self {
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            path: path.to_path_buf(),
+            path,
             data,
-        })
+        }
     }
 
     fn at(&self, r: usize, g: usize, b: usize) -> [f32; 3] {

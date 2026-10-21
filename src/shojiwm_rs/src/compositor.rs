@@ -916,6 +916,14 @@ impl OutputController {
             wake_on_input: options.wake_on_input,
         }));
     }
+
+    /// `setNightLight(kelvin)`: warm every output's white point to this
+    /// colour temperature (6500 K is neutral; lower is warmer), or switch it
+    /// off with `None`. Applied in the output's encode pass, so the TTY and
+    /// winit backends both show it; screen captures do not.
+    pub fn set_night_light(&self, kelvin: Option<f64>) {
+        runtime::send(HostMessage::NightLight(kelvin.map(|kelvin| kelvin as f32)));
+    }
 }
 
 pub use shojiwm_lib::output_power::OutputPowerMode as OutputPower;

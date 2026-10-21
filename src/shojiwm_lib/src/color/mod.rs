@@ -6,6 +6,7 @@
 pub mod colorimetry;
 pub mod drm_metadata;
 pub mod icc;
+pub mod night_light;
 pub mod primaries;
 
 use drm_metadata::EdidHdrMetadata;

@@ -62,6 +62,9 @@ pub enum HostMessage {
     Cursor(RuntimeCursorConfigUpdate),
     /// Switch outputs on or off (`COMPOSITOR.output.setPower`).
     OutputPower(RuntimeOutputPowerRequest),
+    /// Warm every output's white point to this colour temperature in kelvin,
+    /// or stop (`COMPOSITOR.output.set_night_light`).
+    NightLight(Option<f32>),
     /// Result of a posted (fire-and-forget) pointer or gesture hook.
     PointerHookResult(DecorationPointerMoveAsyncInvocation),
     /// A hot reload prepared in the background is done. `Ok` makes the

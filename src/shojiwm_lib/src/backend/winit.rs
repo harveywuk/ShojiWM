@@ -1018,6 +1018,8 @@ pub fn init_winit(
         winit_render_mode(&output).expect("winit output has a mode right after creation");
     let mut damage_tracker = OutputDamageTracker::from_mode_source(initial_render_mode.clone());
     let mut blink_damage_tracker = OutputDamageTracker::from_mode_source(initial_render_mode);
+    // Night light's encode pass (`hdr_pipeline`), as on a TTY output.
+    let mut encode_pipeline: Option<crate::backend::hdr_pipeline::HdrPipeline> = None;
     event_loop
         .handle()
         .insert_source(winit, move |event, _, state| {
@@ -1368,17 +1370,64 @@ pub fn init_winit(
                                     .unwrap_or(Duration::ZERO);
                             state.pre_repaint(&output, frame_target);
 
+                            let output_lut = state.output_lut(&output.name());
+                            if output_lut.is_none() {
+                                encode_pipeline = None;
+                            }
                             bind_default_framebuffer_before_surface();
                             let render_started_at = Instant::now();
                             let render_output_result = {
                                 timescope::scope!("winit render_output");
-                                damage_tracker.render_output(
-                                    renderer,
-                                    &mut framebuffer,
-                                    0,
-                                    &elements,
-                                    [0.1, 0.1, 0.1, 1.0],
-                                )
+                                match output_lut {
+                                    // Composite into the intermediate, then draw it through
+                                    // the LUT; the states are the composite's, so clients
+                                    // still get their frame callbacks and feedback.
+                                    Some(lut) => match crate::backend::hdr_pipeline::render_hdr_pipeline(
+                                        renderer,
+                                        &mut encode_pipeline,
+                                        &output,
+                                        &elements,
+                                        [0.1, 0.1, 0.1, 1.0],
+                                        crate::backend::hdr_pipeline::OutputEncoding::Icc(lut),
+                                        smithay::backend::allocator::Fourcc::Abgr8888,
+                                    ) {
+                                        Ok(Some((encode, states))) => {
+                                            bind_default_framebuffer_before_surface();
+                                            damage_tracker
+                                                .render_output(
+                                                    renderer,
+                                                    &mut framebuffer,
+                                                    0,
+                                                    &[encode],
+                                                    [0.0, 0.0, 0.0, 1.0],
+                                                )
+                                                .map(|mut result| {
+                                                    result.states = states;
+                                                    result
+                                                })
+                                        }
+                                        result => {
+                                            if let Err(error) = result {
+                                                warn!(?error, "night light encode pass failed");
+                                            }
+                                            encode_pipeline = None;
+                                            damage_tracker.render_output(
+                                                renderer,
+                                                &mut framebuffer,
+                                                0,
+                                                &elements,
+                                                [0.1, 0.1, 0.1, 1.0],
+                                            )
+                                        }
+                                    },
+                                    None => damage_tracker.render_output(
+                                        renderer,
+                                        &mut framebuffer,
+                                        0,
+                                        &elements,
+                                        [0.1, 0.1, 0.1, 1.0],
+                                    ),
+                                }
                             };
                             timing.render_elapsed_ms =
                                 render_started_at.elapsed().as_secs_f64() * 1000.0;

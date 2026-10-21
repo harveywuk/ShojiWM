@@ -456,6 +456,12 @@ pub struct ShojiWM {
     pub output_icc: HashMap<String, std::sync::Arc<crate::color::icc::IccLut>>,
     /// What the log last said about each configured profile (by `IccLut::id`).
     pub output_icc_status: HashMap<String, (u64, crate::backend::tty::IccProfileStatus)>,
+    /// Night light's colour temperature in kelvin
+    /// (`COMPOSITOR.output.set_night_light`); `None` while it is off.
+    pub night_light: Option<f32>,
+    /// Per output, the LUT night light runs there, with the temperature and
+    /// the profile (by `IccLut::id`) it was built for.
+    pub night_light_luts: HashMap<String, (f32, Option<u64>, std::sync::Arc<crate::color::icc::IccLut>)>,
     pub managed_window_animations: HashMap<String, BTreeMap<String, ActiveManagedWindowAnimation>>,
     pub managed_window_animation_sequence: u64,
     pub runtime_output_configs: std::collections::BTreeMap<String, RuntimeOutputConfig>,
@@ -1852,6 +1858,8 @@ impl ShojiWM {
             hdr_cursor_caches: Default::default(),
             output_icc: Default::default(),
             output_icc_status: Default::default(),
+            night_light: None,
+            night_light_luts: Default::default(),
             managed_window_animations: Default::default(),
             managed_window_animation_sequence: 0,
             runtime_output_configs: Default::default(),
@@ -3021,6 +3029,13 @@ impl ShojiWM {
                 HostMessage::Cursor(update) => self.apply_runtime_cursor_config_update(update),
                 HostMessage::OutputPower(request) => {
                     self.apply_runtime_output_power_request(request);
+                }
+                HostMessage::NightLight(kelvin) => {
+                    if self.night_light != kelvin {
+                        self.night_light = kelvin;
+                        self.night_light_luts.clear();
+                        self.schedule_redraw();
+                    }
                 }
                 HostMessage::PointerHookResult(invocation) => {
                     let loop_handle = self.loop_handle.clone();
@@ -5124,6 +5139,25 @@ impl ShojiWM {
     /// Whether `output_name` must be redrawn fully this frame; consumes a one-shot request.
     pub fn take_full_damage(&mut self, output_name: &str) -> bool {
         self.full_damage_pending_outputs.remove(output_name) || self.force_full_damage
+    }
+
+    /// The LUT the encode pass runs on SDR output `name`: night light's,
+    /// composed with the output's ICC profile, while night light is on, else
+    /// the profile's. `None` when neither applies.
+    pub fn output_lut(&mut self, name: &str) -> Option<std::sync::Arc<crate::color::icc::IccLut>> {
+        let profile = self.output_icc.get(name).cloned();
+        let Some(kelvin) = self.night_light else {
+            return profile;
+        };
+        let profile_id = profile.as_ref().map(|profile| profile.id);
+        if let Some((built_for, built_with, lut)) = self.night_light_luts.get(name) {
+            if *built_for == kelvin && *built_with == profile_id {
+                return Some(lut.clone());
+            }
+        }
+        let lut = std::sync::Arc::new(crate::color::night_light::lut(kelvin, profile.as_deref()));
+        self.night_light_luts.insert(name.to_owned(), (kelvin, profile_id, lut.clone()));
+        Some(lut)
     }
 
     pub fn schedule_redraw(&mut self) {

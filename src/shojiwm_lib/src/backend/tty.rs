@@ -4359,10 +4359,10 @@ fn render_surface(
             .map(|color| color.mode),
         Some(crate::color::OutputColorMode::Hdr10 { .. })
     );
-    // An SDR output with a monitor ICC profile goes through the encode stage
-    // too, with the profile's LUT instead of the PQ encode.
+    // An SDR output with a monitor ICC profile or night light goes through
+    // the encode stage too, with their LUT instead of the PQ encode.
     let output_icc = (!output_is_hdr)
-        .then(|| state.output_icc.get(output.name().as_str()).cloned())
+        .then(|| state.output_lut(output.name().as_str()))
         .flatten();
     let output_encoded = output_is_hdr || output_icc.is_some();
     let intermediate_fp16 = output_icc.is_some() && hdr_render_supports_fp16(state, node);
