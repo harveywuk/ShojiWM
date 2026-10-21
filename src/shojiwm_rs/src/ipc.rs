@@ -145,6 +145,13 @@ impl IpcServer {
                             alive: AtomicBool::new(true),
                         });
                         if let Ok(mut clients) = clients.lock() {
+                            // Clients that went away hold their socket until
+                            // dropped here: a config that never broadcasts
+                            // (where `broadcast` prunes them) would otherwise
+                            // keep one open per connection, and a client that
+                            // connects for every call (a polling lock screen)
+                            // runs the compositor out of file descriptors.
+                            clients.retain(|client| client.alive.load(Ordering::Relaxed));
                             clients.push(client.clone());
                         }
                         let sender = sender.clone();
