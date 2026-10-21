@@ -1908,6 +1908,18 @@ impl ShojiWM {
                 ButtonState::Released => grab.passthrough_buttons.remove(&button),
             };
             if !through {
+                // A decoration may open a runtime prompt on mouse-down.
+                // Smithay already saw that press and installed its implicit
+                // grab. Deliver its matching release even outside the new
+                // passthrough, otherwise later decoration clicks remain
+                // trapped in the old grab after the prompt closes.
+                if button_state == ButtonState::Released && pointer.is_grabbed() {
+                    pointer.button(
+                        self,
+                        &ButtonEvent { button, state: button_state, serial, time: time_msec },
+                    );
+                    pointer.frame(self);
+                }
                 self.input_grab_pointer_button(button, button_state, time_msec);
                 return;
             }
