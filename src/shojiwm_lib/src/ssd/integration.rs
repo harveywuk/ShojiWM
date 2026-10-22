@@ -2756,6 +2756,30 @@ impl ShojiWM {
         &mut self,
         target_output_name: Option<&str>,
     ) -> Result<(), DecorationEvaluationError> {
+        // A pass can run inside another: one drains the runtime's messages,
+        // and a synthesized press among them refreshes before it is handled.
+        // Only the outermost pass opens and closes the record of windows
+        // marked meanwhile. An inner pass that replaced it would let the
+        // outer one clear a window marked after it was processed, and the
+        // runtime reports a window once until it is evaluated: it would
+        // never be refreshed again.
+        let outermost = self.runtime_dirty_marked_during_refresh.is_none();
+        if outermost {
+            self.runtime_dirty_marked_during_refresh = Some(Default::default());
+        }
+        let result = self.refresh_window_decorations_pass(target_output_name, outermost);
+        if outermost {
+            // Closed by the pass, unless it failed before its end.
+            self.runtime_dirty_marked_during_refresh = None;
+        }
+        result
+    }
+
+    fn refresh_window_decorations_pass(
+        &mut self,
+        target_output_name: Option<&str>,
+        outermost: bool,
+    ) -> Result<(), DecorationEvaluationError> {
         timescope::scope!("ssd refresh_window_decorations_for_output");
         let refresh_started_at = Instant::now();
         let spike_threshold_ms = animation_spike_threshold_ms();
@@ -2810,7 +2834,6 @@ impl ShojiWM {
         let mut closing_runtime_updates = 0usize;
         let mut animation_active_for_target = false;
         let mut processed_runtime_dirty_window_ids = std::collections::HashSet::new();
-        self.runtime_dirty_marked_during_refresh = Some(Default::default());
         let mut managed_rect_apply_window_ids = std::collections::HashSet::new();
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
         let closing_active_count = self.closing_window_snapshots.len();
@@ -4912,7 +4935,12 @@ impl ShojiWM {
             elapsed_ms = refresh_elapsed_ms,
             "refresh_window_decorations finished"
         );
-        let marked_during_refresh = self.runtime_dirty_marked_during_refresh.take().unwrap_or_default();
+        let marked_during_refresh = if outermost {
+            self.runtime_dirty_marked_during_refresh.take()
+        } else {
+            self.runtime_dirty_marked_during_refresh.clone()
+        }
+        .unwrap_or_default();
         for window_id in processed_runtime_dirty_window_ids {
             // Marked again after it was processed: refresh it next time.
             if marked_during_refresh.contains(&window_id) {
