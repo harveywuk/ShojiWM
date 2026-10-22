@@ -430,8 +430,19 @@ fn reserve_x11_display(start: u32) -> Result<ReservedX11Display, Box<dyn std::er
     for display_number in start..start + 50 {
         let lock_path = PathBuf::from(format!("/tmp/.X{display_number}-lock"));
         let flags = OFlags::WRONLY | OFlags::CLOEXEC | OFlags::CREATE | OFlags::EXCL;
-        let Ok(lock_fd) = open(&lock_path, flags, 0o444.into()) else {
-            continue;
+        let lock_fd = match open(&lock_path, flags, 0o444.into()) {
+            Ok(lock_fd) => lock_fd,
+            Err(Errno::EXIST) if reclaim_stale_display(display_number, &lock_path) => {
+                info!(
+                    display = %format_args!(":{display_number}"),
+                    "reclaimed an X11 display left behind by a server that died"
+                );
+                let Ok(lock_fd) = open(&lock_path, flags, 0o444.into()) else {
+                    continue;
+                };
+                lock_fd
+            }
+            Err(_) => continue,
         };
         let lock_guard = UnlinkGuard(lock_path);
 
@@ -461,6 +472,29 @@ fn reserve_x11_display(start: u32) -> Result<ReservedX11Display, Box<dyn std::er
     }
 
     Err(io::Error::other("no free X11 display found").into())
+}
+
+/// Remove the lock and pathname socket of a display whose server died
+/// without cleaning up (a killed compositor leaves both), as Xorg does: the
+/// lock names a process that no longer exists and nothing answers on the
+/// socket. Without this every such death uses up one of the displays
+/// `reserve_x11_display` tries.
+fn reclaim_stale_display(display_number: u32, lock_path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(lock_path) else {
+        return false;
+    };
+    let Ok(pid) = text.trim().parse::<u32>() else {
+        return false;
+    };
+    if pid == 0 || Path::new(&format!("/proc/{pid}")).exists() {
+        return false;
+    }
+    let socket = PathBuf::from(format!("{X11_TMP_UNIX_DIR}/X{display_number}"));
+    if UnixStream::connect(&socket).is_ok() {
+        return false;
+    }
+    let _ = fs::remove_file(&socket);
+    fs::remove_file(lock_path).is_ok()
 }
 
 fn x11_socket_is_in_use(error: &(dyn std::error::Error + 'static)) -> bool {
@@ -731,5 +765,37 @@ mod tests {
         drop(reservation);
         drop(occupied);
         drop(occupied_guard);
+    }
+
+    #[test]
+    fn reclaims_a_display_whose_server_died() {
+        ensure_x11_unix_dir().expect("prepare X11 socket directory");
+        let paths = TestDisplayPaths::new();
+        // What a killed server leaves: a lock naming a process that is gone
+        // and a socket file nobody listens on.
+        fs::write(format!("/tmp/.X{}-lock", paths.start()), "999999999\n").expect("write lock");
+        drop(
+            std::os::unix::net::UnixListener::bind(format!("{X11_TMP_UNIX_DIR}/X{}", paths.start()))
+                .expect("leave a socket file"),
+        );
+
+        let reservation = reserve_x11_display(paths.start()).expect("reserve display");
+
+        assert_eq!(reservation.0, paths.start());
+        drop(reservation);
+    }
+
+    #[test]
+    fn keeps_a_lock_whose_server_is_alive() {
+        ensure_x11_unix_dir().expect("prepare X11 socket directory");
+        let paths = TestDisplayPaths::new();
+        fs::write(format!("/tmp/.X{}-lock", paths.start()), format!("{:>10}\n", std::process::id()))
+            .expect("write lock");
+
+        let reservation = reserve_x11_display(paths.start()).expect("reserve next display");
+
+        assert_eq!(reservation.0, paths.start() + 1);
+        assert!(PathBuf::from(format!("/tmp/.X{}-lock", paths.start())).exists());
+        drop(reservation);
     }
 }
