@@ -1020,6 +1020,9 @@ pub fn init_winit(
     let mut blink_damage_tracker = OutputDamageTracker::from_mode_source(initial_render_mode);
     // Night light's encode pass (`hdr_pipeline`), as on a TTY output.
     let mut encode_pipeline: Option<crate::backend::hdr_pipeline::HdrPipeline> = None;
+    // Tests that drive a nested session with synthesized input set this, so
+    // the host's pointer and keys passing over its window change nothing.
+    let ignore_host_input = std::env::var_os("SHOJI_IGNORE_HOST_INPUT").is_some_and(|value| value == "1");
     event_loop
         .handle()
         .insert_source(winit, move |event, _, state| {
@@ -1037,7 +1040,11 @@ pub fn init_winit(
                     // A locked session's surfaces take the new size too.
                     state.configure_session_lock_surfaces();
                 }
-                WinitEvent::Input(event) => state.process_input_event(event),
+                WinitEvent::Input(event) => {
+                    if !ignore_host_input {
+                        state.process_input_event(event);
+                    }
+                }
                 WinitEvent::Redraw => {
                     let mut backend = backend.borrow_mut();
                     timescope::scope!("winit redraw");
