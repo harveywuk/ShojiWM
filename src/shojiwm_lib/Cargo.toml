@@ -20,10 +20,12 @@ smithay-drm-extras = {
 }
 # xwayland-satellite, run in-process on its own thread (see
 # `xwayland_satellite.rs`). Renamed so the crate does not clash with that module.
+# bea4dev's fork merged with upstream main, plus upstream PR #454: an X window
+# keeps a monitor it is still on when it leaves the one it was placed on.
 satellite = {
     package = "xwayland-satellite",
-    git = "https://github.com/bea4dev/xwayland-satellite.git",
-    rev = "d995e79977d63e30e556302a347c6df8b7fd0961"
+    git = "https://github.com/harveywuk/xwayland-satellite.git",
+    rev = "9d5b258f9eebc0a302acdc8c7b650e1a6a09bea2"
 }
 wayland-protocols = { version = "0.32.12", features = ["server", "staging"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["server"] }
