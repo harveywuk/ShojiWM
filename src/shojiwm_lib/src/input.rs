@@ -2553,11 +2553,16 @@ impl ShojiWM {
         };
         let now = std::time::Duration::from(self.clock.now());
         let (time_msec, time_us) = (now.as_millis() as u32, now.as_micros() as u64);
+        // User input, as a device's is in `process_input_event`: what it sets
+        // in motion (a click on a dock bringing a window forward) passes the
+        // focus-ordering rules the same way.
+        let previous = std::mem::replace(&mut self.user_input_in_flight, true);
         self.handle_pointer_motion_absolute(pos, time_msec, time_us);
         if let Some(button) = input.button {
             let state = if input.pressed { ButtonState::Pressed } else { ButtonState::Released };
             self.handle_pointer_button(button, state, time_msec);
         }
+        self.user_input_in_flight = previous;
     }
 
     pub(crate) fn apply_runtime_window_actions(&mut self, actions: Vec<RuntimeWindowAction>) {
