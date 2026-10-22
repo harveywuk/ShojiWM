@@ -966,6 +966,45 @@ fn init_winit_dmabuf(backend: &mut winit::WinitGraphicsBackend<GlesRenderer>, st
     state.dmabuf_global = Some(global);
 }
 
+/// `SHOJI_WINIT_PHANTOM_OUTPUT=WxH`: a second output, `winit-phantom` (after
+/// `winit` in automatic placement), to the right of the
+/// window's, for testing what spans displays in a nested session. Windows,
+/// decorations and the runtime see it as any other output; it is never
+/// drawn (nor can it be captured), so what is on it is checked through the
+/// runtime, and what leaves it through the window's output.
+fn phantom_output(state: &mut ShojiWM, window_width: i32) -> Option<Output> {
+    let value = std::env::var("SHOJI_WINIT_PHANTOM_OUTPUT").ok()?;
+    let (w, h) = value.split_once('x')?;
+    let size = (w.trim().parse::<i32>().ok()?, h.trim().parse::<i32>().ok()?);
+    if size.0 <= 0 || size.1 <= 0 {
+        warn!(%value, "SHOJI_WINIT_PHANTOM_OUTPUT wants WxH");
+        return None;
+    }
+    let output = Output::new(
+        "winit-phantom".to_string(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "Smithay".into(),
+            model: "Phantom".into(),
+            serial_number: "Unknown".into(),
+        },
+    );
+    let mode = Mode { size: size.into(), refresh: 60_000 };
+    output.change_current_state(Some(mode), Some(Transform::Normal), None, None);
+    output.set_preferred(mode);
+    let _global = state.create_output_global(&output);
+    place_phantom_output(state, &output, window_width);
+    info!(?size, "phantom output for tests");
+    Some(output)
+}
+
+fn place_phantom_output(state: &mut ShojiWM, phantom: &Output, window_width: i32) {
+    phantom.change_current_state(None, None, None, Some((window_width, 0).into()));
+    state.space.map_output(phantom, (window_width, 0));
+    state.notify_runtime_outputs_changed();
+}
+
 pub fn init_winit(
     event_loop: &mut EventLoop<ShojiWM>,
     state: &mut ShojiWM,
@@ -1013,6 +1052,7 @@ pub fn init_winit(
     let _global = state.create_output_global(&output);
 
     state.space.map_output(&output, (0, 0));
+    let phantom = phantom_output(state, mode.size.w);
 
     let initial_render_mode =
         winit_render_mode(&output).expect("winit output has a mode right after creation");
@@ -1037,6 +1077,9 @@ pub fn init_winit(
                         None,
                         None,
                     );
+                    if let Some(phantom) = &phantom {
+                        place_phantom_output(state, phantom, size.w);
+                    }
                     // A locked session's surfaces take the new size too.
                     state.configure_session_lock_surfaces();
                 }
@@ -1059,6 +1102,12 @@ pub fn init_winit(
                             state.refresh_window_decorations_for_output(Some(output.name().as_str()))
                         {
                             warn!(error = ?err, "failed to refresh window decorations for winit");
+                        }
+                        // Never drawn, but decorated (and laid out) all the same.
+                        if let Some(phantom) = &phantom
+                            && let Err(err) = state.refresh_window_decorations_for_output(Some(phantom.name().as_str()))
+                        {
+                            warn!(error = ?err, "failed to refresh window decorations for the phantom output");
                         }
                     }
                     state.refresh_drag_views();
