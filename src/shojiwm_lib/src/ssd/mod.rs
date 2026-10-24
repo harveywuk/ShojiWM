@@ -2277,7 +2277,7 @@ fn layout_node_resolved(
         children,
     };
 
-    apply_node_transform(&mut computed);
+    apply_node_transform(&mut computed, inherited_clip);
     Ok(computed)
 }
 
@@ -2721,7 +2721,7 @@ fn layout_popup(
     layout_node_resolved(node, rect, None, window_slot_size, frame, rect)
 }
 
-fn apply_node_transform(node: &mut ComputedDecorationNode) {
+fn apply_node_transform(node: &mut ComputedDecorationNode, inherited_clip: Option<ResolvedDecorationClip>) {
     let Some(transform) = node.style.transform else {
         return;
     };
@@ -2734,6 +2734,41 @@ fn apply_node_transform(node: &mut ComputedDecorationNode) {
         node.resolved_rect.y.raw() as f64 + node.resolved_rect.height.raw() as f64 * 0.5,
     );
     transform_subtree(node, origin, transform);
+    // A clip from outside the node (a scrolling area, say) stays where it
+    // is: transformed with the node, a translation would have carried it
+    // along and a scale moved its edges in over the node. The node's and its
+    // descendants' own clips are taken again from their transformed boxes.
+    reclip_transformed(node, inherited_clip);
+}
+
+/// `node`'s clip and its descendants', from their (transformed) content
+/// rects under `inherited_clip`; corner radii shrink with the scale.
+fn reclip_transformed(node: &mut ComputedDecorationNode, inherited_clip: Option<ResolvedDecorationClip>) {
+    let frame = node.frame;
+    let own = node_style_clips_children(&node.style).then(|| {
+        let radius = (node.style.resolved_border_radius(frame.scale) - node.style.resolved_border_width(frame.scale))
+            .max(ResolvedLayoutValue::ZERO);
+        let factor = node.transform_scale.0.min(node.transform_scale.1);
+        ResolvedDecorationClip {
+            rect: node.resolved_content_rect,
+            radius: ResolvedLayoutValue::from_raw((radius.raw() as f64 * factor).round() as i32),
+        }
+    });
+    node.resolved_effective_clip = match (inherited_clip, own) {
+        // Moved wholly outside its clip, it shows nothing (no clip at all
+        // would draw it in full).
+        (Some(parent), Some(current)) => Some(intersect_resolved_decoration_clips(parent, current).unwrap_or(ResolvedDecorationClip {
+            rect: ResolvedLogicalRect { width: ResolvedLayoutValue::ZERO, height: ResolvedLayoutValue::ZERO, ..parent.rect },
+            radius: ResolvedLayoutValue::ZERO,
+        })),
+        (Some(parent), None) => Some(parent),
+        (None, current) => current,
+    };
+    node.effective_clip = node.resolved_effective_clip.map(|clip| clip.to_logical_clip(frame));
+    let clip = node.resolved_effective_clip;
+    for child in &mut node.children {
+        reclip_transformed(child, clip);
+    }
 }
 
 fn transform_subtree(
@@ -3633,12 +3668,16 @@ fn effective_clip_for_node_resolved(
 }
 
 fn node_clips_children(node: &DecorationNode) -> bool {
+    node_style_clips_children(&node.style)
+}
+
+fn node_style_clips_children(style: &DecorationStyle) -> bool {
     // A container border defines the visible inner edge for its descendants.
     // `overflow: visible` is the explicit escape hatch. WindowSlot is filtered
     // separately when the client-surface clip is derived, because it is a leaf
     // placement marker rather than an SSD container.
-    node.style.clips_children()
-        || (node.style.has_border() && !matches!(node.style.overflow, Some(Overflow::Visible)))
+    style.clips_children()
+        || (style.has_border() && !matches!(style.overflow, Some(Overflow::Visible)))
 }
 
 fn intersect_resolved_decoration_clips(
@@ -3899,6 +3938,56 @@ mod tests {
             .expect("child should inherit rounded clip");
 
         assert_eq!(clip.radius.raw(), 18);
+    }
+
+    #[test]
+    fn a_transformed_child_keeps_its_parents_clip_where_it_is() {
+        // A scrolling area (overflow hidden) around content scaled to half:
+        // the area's clip must not shrink around the content's middle.
+        let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode { direction: LayoutDirection::Column }))
+            .with_style(DecorationStyle { overflow: Some(Overflow::Hidden), ..Default::default() })
+            .with_children(vec![
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                    .with_style(DecorationStyle {
+                        width: Some(100.0),
+                        height: Some(100.0),
+                        transform: Some(NodeTransform { translate_x: 0.0, translate_y: 0.0, scale_x: 0.5, scale_y: 0.5 }),
+                        ..Default::default()
+                    })
+                    .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                        .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)])]),
+            ]);
+        let layout = DecorationTree::new(root).layout(LogicalRect::new(0, 0, 100, 100)).expect("layout should succeed");
+        let area = layout.root.resolved_effective_clip.expect("the area clips").rect;
+        let content = &layout.root.children[0];
+        assert_eq!(content.resolved_effective_clip.expect("inherited").rect, area);
+        assert_eq!(content.children[0].resolved_effective_clip.expect("inherited").rect, area);
+        assert_eq!(content.transform_scale, (0.5, 0.5));
+    }
+
+    #[test]
+    fn a_clipping_child_moved_outside_its_parents_clip_shows_nothing() {
+        // Scrolled out of view: its own clip and the area's do not meet.
+        let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode { direction: LayoutDirection::Column }))
+            .with_style(DecorationStyle { overflow: Some(Overflow::Hidden), ..Default::default() })
+            .with_children(vec![
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                    .with_style(DecorationStyle {
+                        width: Some(100.0),
+                        height: Some(100.0),
+                        overflow: Some(Overflow::Hidden),
+                        transform: Some(NodeTransform { translate_x: 0.0, translate_y: 150.0, scale_x: 1.0, scale_y: 1.0 }),
+                        ..Default::default()
+                    })
+                    .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                        .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)])]),
+            ]);
+        let layout = DecorationTree::new(root).layout(LogicalRect::new(0, 0, 100, 100)).expect("layout should succeed");
+        let moved = &layout.root.children[0];
+        let clip = moved.resolved_effective_clip.expect("an empty clip, not none");
+        assert_eq!((clip.rect.width.raw(), clip.rect.height.raw()), (0, 0));
+        let inner = moved.children[0].resolved_effective_clip.expect("inherited");
+        assert_eq!((inner.rect.width.raw(), inner.rect.height.raw()), (0, 0));
     }
 
     #[test]

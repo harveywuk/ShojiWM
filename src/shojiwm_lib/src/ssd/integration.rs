@@ -7667,6 +7667,9 @@ fn collect_text_buffers(
     let blur = crate::backend::blur::quantize(node.style.blur.unwrap_or(0.0));
     let (grow, grow_precise) = blur_growth(blur);
 
+    // A scale transform on the label or an ancestor shrinks its rect: the
+    // text shrinks with it, as borders and radii do (`node_geometry`).
+    let text_scale = node.transform_scale.0.min(node.transform_scale.1) as f32;
     let spec = LabelSpec {
         rect: grow(node.rect),
         rect_precise: Some(grow_precise(
@@ -7678,12 +7681,12 @@ fn collect_text_buffers(
         // Opacity is applied when drawn (`opacity` below): baked into the
         // colour, every step of a fade would rasterize the text again.
         color,
-        font_size: node.style.font_size.unwrap_or(13.0) as f32,
+        font_size: node.style.font_size.unwrap_or(13.0) as f32 * text_scale,
         font_weight: node.style.font_weight.clone(),
         font_family: node.style.font_family.clone(),
         text_align: node.style.text_align.clone(),
         text_overflow: node.style.text_overflow.clone(),
-        line_height: node.style.line_height.map(|value| value as f32),
+        line_height: node.style.line_height.map(|value| value as f32 * text_scale),
         raster_scale,
         blur,
     };
