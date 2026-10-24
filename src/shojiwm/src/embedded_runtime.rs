@@ -719,7 +719,11 @@ fn op_shoji_input_grab(id: u32, active: bool) {
         && let Some(host) = slot.as_ref()
     {
         host.send(shojiwm_lib::runtime_api::HostMessage::InputGrab(
-            shojiwm_lib::runtime_input_grab::RuntimeInputGrabUpdate { id: u64::from(id), active },
+            shojiwm_lib::runtime_input_grab::RuntimeInputGrabUpdate {
+                id: u64::from(id),
+                active,
+                pointer_passthrough: None,
+            },
         ));
     }
 }
