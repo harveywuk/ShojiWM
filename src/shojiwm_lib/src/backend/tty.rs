@@ -5472,7 +5472,7 @@ fn render_surface(
         let unchanged_frame = surface
             .frame_gate
             .unchanged(&elements, &gate_key)
-            .filter(|_| !crate::env_flag!("SHOJI_DISABLE_FRAME_GATE"))
+            .filter(|_| crate::perf_options::PerfOption::FrameGate.enabled())
             .map(TtyRenderFrameResult::unchanged);
         let gated = unchanged_frame.is_some();
         let render_frame_result: Result<TtyRenderFrameResult, Box<dyn std::error::Error>> =

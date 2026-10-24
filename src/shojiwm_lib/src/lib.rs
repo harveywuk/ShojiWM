@@ -42,6 +42,7 @@ pub mod cursor;
 pub mod dnd;
 pub mod frame_pacing;
 pub mod frame_stats;
+pub mod perf_options;
 pub mod drawing;
 pub mod foreign_toplevel;
 pub mod grabs;

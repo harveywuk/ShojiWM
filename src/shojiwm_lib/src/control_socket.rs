@@ -1,5 +1,5 @@
 //! Compositor control socket behind `shoji_wm --quit` / `--reload` /
-//! `--frame-stats` / `--frame-debug`.
+//! `--frame-stats` / `--frame-debug` / `--perf-option`.
 //!
 //! The same two escape hatches as `Super+Shift+Q` / `Super+Shift+R`, reachable
 //! from a terminal, a status bar's click handler or a config keybinding that
@@ -13,12 +13,15 @@
 //! ```text
 //! client -> server   "quit\n" | "reload\n" | "frame-stats\n"
 //!                    | "frame-debug on\n" | "frame-debug off\n" | "frame-debug\n"
+//!                    | "perf-option NAME on\n" | "perf-option NAME off\n" | "perf-options\n"
 //! server -> client   "ok\n" | "<one line of JSON>\n" | "error: <message>\n"
 //! ```
 //!
 //! `frame-stats` and `frame-debug` are answered from this socket's thread
 //! ([`crate::frame_stats`]), never the event loop's: the per-output counters,
-//! and turning frame debugging on or off or taking what it collected.
+//! and turning frame debugging on or off or taking what it collected. So are
+//! `perf-option` ([`crate::perf_options`]), which then asks the event loop
+//! for a redraw, and `perf-options`.
 
 use std::{
     ffi::OsStr,
@@ -50,22 +53,29 @@ pub enum Command {
     FrameDebugOn,
     FrameDebugOff,
     FrameDebugTake,
+    /// Turn a rendering shortcut on (`true`) or off.
+    PerfOption(crate::perf_options::PerfOption, bool),
+    PerfOptions,
 }
 
 impl Command {
     /// Answered from the socket's thread, with JSON.
     fn answers_with_json(self) -> bool {
-        matches!(self, Self::FrameStats | Self::FrameDebugTake)
+        matches!(self, Self::FrameStats | Self::FrameDebugTake | Self::PerfOptions)
     }
 
-    fn as_str(self) -> &'static str {
+    fn as_str(self) -> String {
         match self {
-            Self::Quit => "quit",
-            Self::Reload => "reload",
-            Self::FrameStats => "frame-stats",
-            Self::FrameDebugOn => "frame-debug on",
-            Self::FrameDebugOff => "frame-debug off",
-            Self::FrameDebugTake => "frame-debug",
+            Self::Quit => "quit".into(),
+            Self::Reload => "reload".into(),
+            Self::FrameStats => "frame-stats".into(),
+            Self::FrameDebugOn => "frame-debug on".into(),
+            Self::FrameDebugOff => "frame-debug off".into(),
+            Self::FrameDebugTake => "frame-debug".into(),
+            Self::PerfOption(option, on) => {
+                format!("perf-option {} {}", option.name(), if on { "on" } else { "off" })
+            }
+            Self::PerfOptions => "perf-options".into(),
         }
     }
 
@@ -77,7 +87,16 @@ impl Command {
             "frame-debug on" => Some(Self::FrameDebugOn),
             "frame-debug off" => Some(Self::FrameDebugOff),
             "frame-debug" => Some(Self::FrameDebugTake),
-            _ => None,
+            "perf-options" => Some(Self::PerfOptions),
+            other => {
+                let (name, state) = other.strip_prefix("perf-option ")?.split_once(' ')?;
+                let on = match state {
+                    "on" => true,
+                    "off" => false,
+                    _ => return None,
+                };
+                Some(Self::PerfOption(crate::perf_options::PerfOption::parse(name)?, on))
+            }
         }
     }
 }
@@ -123,14 +142,17 @@ pub fn start(loop_handle: &LoopHandle<'static, ShojiWM>, wayland_display: &OsStr
     let (sender, receiver) = channel::<Command>();
     if let Err(error) = loop_handle.insert_source(receiver, |event, _, state| {
         if let ChannelEvent::Msg(command) = event {
-            info!(command = command.as_str(), "control socket command");
+            info!(command = %command.as_str(), "control socket command");
             match command {
                 Command::Quit => state.shutdown(),
                 Command::Reload => state.reload_decoration_runtime(),
+                // Switched on the socket's thread; draw with it now.
+                Command::PerfOption(..) => state.schedule_redraw(),
                 Command::FrameStats
                 | Command::FrameDebugOn
                 | Command::FrameDebugOff
-                | Command::FrameDebugTake => {}
+                | Command::FrameDebugTake
+                | Command::PerfOptions => {}
             }
         }
     }) {
@@ -163,8 +185,16 @@ fn serve(listener: UnixListener, sender: Sender<Command>) {
             Ok(Command::FrameDebugTake) => crate::frame_stats::take_debug_json(),
             Ok(command @ (Command::FrameDebugOn | Command::FrameDebugOff)) => {
                 crate::frame_stats::set_debugging(command == Command::FrameDebugOn);
-                info!(command = command.as_str(), "control socket command");
+                info!(command = %command.as_str(), "control socket command");
                 "ok".to_string()
+            }
+            Ok(Command::PerfOptions) => crate::perf_options::json(),
+            Ok(command @ Command::PerfOption(option, on)) => {
+                option.set(on);
+                match sender.send(command) {
+                    Ok(()) => "ok".to_string(),
+                    Err(_) => return,
+                }
             }
             Ok(command) => match sender.send(command) {
                 Ok(()) => "ok".to_string(),
@@ -235,6 +265,9 @@ mod tests {
             Command::FrameDebugOn,
             Command::FrameDebugOff,
             Command::FrameDebugTake,
+            Command::PerfOption(crate::perf_options::PerfOption::TargetedRedraw, false),
+            Command::PerfOption(crate::perf_options::PerfOption::FrameGate, true),
+            Command::PerfOptions,
         ] {
             assert_eq!(Command::parse(&format!("{}\n", command.as_str())), Some(command));
         }
