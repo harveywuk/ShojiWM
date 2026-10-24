@@ -39,6 +39,9 @@ pub struct OutputFrames {
     pub committed: u64,
     /// Renders that found nothing to change, so committed nothing.
     pub empty: u64,
+    /// Of those, the ones the frame gate kept from repainting the swapchain
+    /// (`crate::backend::frame_gate`).
+    pub unchanged: u64,
     /// Frames the GPU was still drawing when their render returned, committed
     /// once their fence signalled.
     pub held_for_gpu: u64,
