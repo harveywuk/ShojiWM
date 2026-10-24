@@ -12,7 +12,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     panic::Location,
     sync::{
         Mutex,
@@ -81,6 +81,10 @@ static DEBUGGING: AtomicBool = AtomicBool::new(false);
 struct DebugLog {
     since: Option<Instant>,
     redraw_callers: BTreeMap<&'static Location<'static>, u64>,
+    /// Per output, the callers that asked it for a frame since its last render.
+    requests: BTreeMap<String, BTreeSet<&'static Location<'static>>>,
+    /// Per output, its renders by what asked for them: `[drawn, unchanged]`.
+    renders: BTreeMap<String, [BTreeMap<Option<&'static Location<'static>>, u64>; 2]>,
     frames: VecDeque<serde_json::Value>,
     frames_dropped: u64,
 }
@@ -88,6 +92,8 @@ struct DebugLog {
 static DEBUG_LOG: Mutex<DebugLog> = Mutex::new(DebugLog {
     since: None,
     redraw_callers: BTreeMap::new(),
+    requests: BTreeMap::new(),
+    renders: BTreeMap::new(),
     frames: VecDeque::new(),
     frames_dropped: 0,
 });
@@ -110,6 +116,8 @@ pub fn set_debugging(on: bool) {
     let mut log = debug_log();
     log.since = on.then(Instant::now);
     log.redraw_callers.clear();
+    log.requests.clear();
+    log.renders.clear();
     log.frames.clear();
     log.frames_dropped = 0;
 }
@@ -117,6 +125,36 @@ pub fn set_debugging(on: bool) {
 /// Count one `schedule_redraw` call from `caller`, while debugging.
 pub fn record_redraw_caller(caller: &'static Location<'static>) {
     *debug_log().redraw_callers.entry(caller).or_default() += 1;
+}
+
+/// `caller` asked `outputs` for a frame, while debugging (counted as a
+/// `schedule_redraw` call too).
+pub fn record_redraw_request(
+    caller: &'static Location<'static>,
+    outputs: impl IntoIterator<Item = String>,
+) {
+    let mut log = debug_log();
+    *log.redraw_callers.entry(caller).or_default() += 1;
+    for output in outputs {
+        log.requests.entry(output).or_default().insert(caller);
+    }
+}
+
+/// `output` rendered a frame, which `drawn` or found unchanged, while
+/// debugging: counted against the callers that asked for it.
+pub fn record_render(output: &str, drawn: bool) {
+    if !debugging() {
+        return;
+    }
+    let mut log = debug_log();
+    let callers = log.requests.remove(output).unwrap_or_default();
+    let counts = &mut log.renders.entry(output.to_owned()).or_default()[usize::from(!drawn)];
+    if callers.is_empty() {
+        *counts.entry(None).or_default() += 1;
+    }
+    for caller in callers {
+        *counts.entry(Some(caller)).or_default() += 1;
+    }
 }
 
 /// What frame debugging collected since the last take, as one line of JSON,
@@ -134,10 +172,30 @@ pub fn take_debug_json() -> String {
     callers.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     let frames = std::mem::take(&mut log.frames);
     let dropped = std::mem::take(&mut log.frames_dropped);
+    let named = |counts: &BTreeMap<Option<&'static Location<'static>>, u64>| {
+        let mut named = counts
+            .iter()
+            .map(|(caller, count)| {
+                let caller = caller.map_or("(none)".to_owned(), |caller| {
+                    format!("{}:{}", caller.file(), caller.line())
+                });
+                (caller, *count)
+            })
+            .collect::<Vec<_>>();
+        named.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        named
+    };
+    let renders = std::mem::take(&mut log.renders)
+        .into_iter()
+        .map(|(output, [drawn, unchanged])| {
+            (output, serde_json::json!({"drawn": named(&drawn), "unchanged": named(&unchanged)}))
+        })
+        .collect::<serde_json::Map<_, _>>();
     serde_json::json!({
         "enabled": debugging(),
         "seconds": seconds,
         "redraw_callers": callers,
+        "renders": renders,
         "frames_dropped": dropped,
         "frames": frames,
     })
@@ -267,7 +325,10 @@ mod tests {
         set_debugging(true);
         let here = Location::caller();
         record_redraw_caller(here);
-        record_redraw_caller(here);
+        record_redraw_request(here, ["test-render".to_owned()]);
+        // The request is answered by the first render; the second had none.
+        record_render("test-render", true);
+        record_render("test-render", false);
         let taken: serde_json::Value = serde_json::from_str(&take_debug_json()).unwrap();
         assert_eq!(taken["enabled"], true);
         let callers = taken["redraw_callers"].as_array().unwrap();
@@ -276,6 +337,9 @@ mod tests {
             .find(|caller| caller[0] == format!("{}:{}", here.file(), here.line()))
             .unwrap();
         assert_eq!(ours[1], 2);
+        let renders = &taken["renders"]["test-render"];
+        assert_eq!(renders["drawn"], serde_json::json!([[ours[0], 1]]));
+        assert_eq!(renders["unchanged"], serde_json::json!([["(none)", 1]]));
         let again: serde_json::Value = serde_json::from_str(&take_debug_json()).unwrap();
         assert!(again["redraw_callers"].as_array().unwrap().iter().all(|caller| caller[0] != ours[0]));
         set_debugging(false);

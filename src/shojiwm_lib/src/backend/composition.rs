@@ -343,6 +343,17 @@ impl OutputComposition {
         }
         ids
     }
+
+    /// Whether the plan picks the window `id` by id (`selected_window_ids`).
+    pub fn picks_window(&self, id: &str) -> bool {
+        let picks = |nodes: &[CompositionNode]| {
+            nodes.iter().any(|node| {
+                matches!(node, CompositionNode::Windows { windows: Some(windows), .. }
+                    if windows.iter().any(|window| window == id))
+            })
+        };
+        picks(&self.nodes) || self.textures.iter().any(|texture| picks(&texture.nodes))
+    }
 }
 
 fn validate_rect(rect: Option<&RectF>) -> Result<(), String> {
@@ -1391,6 +1402,9 @@ mod tests {
             other => panic!("unexpected node {other:?}"),
         }
         assert_eq!(plan.selected_window_ids(), HashSet::from(["w1".to_owned()]));
+        assert!(plan.picks_window("w1"));
+        // The texture's `windows` node is the output's own stack, not a pick.
+        assert!(!plan.picks_window("w2"));
     }
 
     #[test]

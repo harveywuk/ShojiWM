@@ -3858,7 +3858,8 @@ impl ShojiWM {
                             animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
                             processed_runtime_dirty_window_ids.insert(snapshot_id);
                             if rendered_changed {
-                                self.schedule_redraw();
+                                // Only uniforms changed: the window drew where it draws now.
+                                self.schedule_window_redraw(&window);
                             }
                             continue;
                         }

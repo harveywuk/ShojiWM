@@ -718,10 +718,12 @@ impl CompositorHandler for ShojiWM {
                 if let Some(top) = window.toplevel() {
                     debug!(surface = ?top.wl_surface().id(), "toplevel commit matched mapped window");
                 }
-                // This commit touched a rendered mapped toplevel / X11 window. Queue a redraw.
+                // This commit touched a rendered mapped toplevel / X11 window. Queue a redraw
+                // of the outputs that draw it, now or in their last frame (a window that
+                // shrank off an output still clears it there).
                 // Idle ManagedWindows still accept commits so their latest buffer is ready on
                 // restore, but they intentionally don't wake rendering or source-damage effects.
-                self.schedule_redraw();
+                self.schedule_window_redraw(&window);
             } else if frame_liveness_debug_enabled() {
                 info!(
                     window_id = %snapshot.id,
