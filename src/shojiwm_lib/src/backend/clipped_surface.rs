@@ -1,11 +1,15 @@
 use cgmath::{ElementWise, Matrix3, Vector2, Vector3};
 use smithay::{
+    backend::allocator::Fourcc,
     backend::renderer::{
+        Frame, ImportMem,
         element::{
             Element, Id, Kind, RenderElement, UnderlyingStorage,
-            surface::WaylandSurfaceRenderElement,
+            surface::{WaylandSurfaceRenderElement, WaylandSurfaceTexture},
         },
-        gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName},
+        gles::{
+            GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
+        },
         utils::{CommitCounter, DamageSet, OpaqueRegions},
     },
     utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
@@ -196,6 +200,8 @@ pub struct ClippedSurfaceElement {
     /// `src_transfer == 0.0` is the untagged fast path and makes the shader
     /// skip the conversion entirely, so nothing changes for sRGB clients.
     color: SurfaceColor,
+    /// A single-pixel buffer's colour as a texture (`solid_texture`).
+    solid: Option<GlesTexture>,
 }
 
 /// The shader's color-management uniforms for one surface.
@@ -209,6 +215,52 @@ struct SurfaceColor {
 
 #[derive(Debug)]
 struct ClippedSurfaceProgram(GlesTexProgram);
+
+/// 1x1 textures of single-pixel buffer colours, by premultiplied RGBA8.
+#[derive(Debug, Default)]
+struct SolidTextures(std::cell::RefCell<std::collections::HashMap<[u8; 4], GlesTexture>>);
+
+/// A single-pixel buffer's colour as a 1x1 texture. smithay draws such a
+/// buffer as a solid fill, which no texture program reaches: drawn as is, the
+/// clip (and the colour conversion) would not apply. GStreamer's waylandsink
+/// fills its window this way, so its video showed square corners.
+fn solid_texture(
+    renderer: &mut GlesRenderer,
+    inner: &WaylandSurfaceRenderElement<GlesRenderer>,
+) -> Result<Option<GlesTexture>, GlesError> {
+    let WaylandSurfaceTexture::SolidColor(color) = inner.texture() else {
+        return Ok(None);
+    };
+    // Premultiplied, like the buffer and like `draw_solid` takes it.
+    let rgba = color
+        .components()
+        .map(|component| (component.clamp(0.0, 1.0) * 255.0).round() as u8);
+    let cached = renderer
+        .egl_context()
+        .user_data()
+        .get_or_insert(SolidTextures::default)
+        .0
+        .borrow()
+        .get(&rgba)
+        .cloned();
+    if let Some(texture) = cached {
+        return Ok(Some(texture));
+    }
+    // Abgr8888 is R, G, B, A in memory.
+    let texture = renderer.import_memory(&rgba, Fourcc::Abgr8888, (1, 1).into(), false)?;
+    let textures = &renderer
+        .egl_context()
+        .user_data()
+        .get_or_insert(SolidTextures::default)
+        .0;
+    let mut textures = textures.borrow_mut();
+    // Clients use a handful of colours; never let it grow without bound.
+    if textures.len() >= 64 {
+        textures.clear();
+    }
+    textures.insert(rgba, texture.clone());
+    Ok(Some(texture))
+}
 
 /// The shader's color-management uniforms, in the order `color_uniforms`
 /// returns them.
@@ -474,6 +526,7 @@ impl ClippedSurfaceElement {
         image_description: Option<crate::color::ImageDescription>,
     ) -> Result<Self, GlesError> {
         let program = Self::program(renderer)?;
+        let solid = solid_texture(renderer, &inner)?;
 
         let element_geometry = inner.geometry(output_scale);
         // ContentClip callers pass forced_geometry when the compositor has an explicit
@@ -737,6 +790,7 @@ impl ClippedSurfaceElement {
                 0.0
             },
             color,
+            solid,
         })
     }
 
@@ -752,6 +806,7 @@ impl ClippedSurfaceElement {
         image_description: crate::color::ImageDescription,
     ) -> Result<Self, GlesError> {
         let program = Self::program(renderer)?;
+        let solid = solid_texture(renderer, &inner)?;
         let geometry = inner.geometry(output_scale);
         let output_scale = output_scale.x.abs().max(0.0001) as f32;
         let whole_element = SnappedLogicalRect {
@@ -779,6 +834,7 @@ impl ClippedSurfaceElement {
             sample_uv_snap_axes: [0.0; 2],
             sample_uv_compensation_enabled: 0.0,
             color,
+            solid,
         })
     }
 
@@ -1105,15 +1161,27 @@ impl RenderElement<GlesRenderer> for ClippedSurfaceElement {
                     );
                 }
                 frame.override_default_tex_program(self.program.clone(), uniforms);
-                let result = RenderElement::<GlesRenderer>::draw(
-                    inner,
-                    frame,
-                    src,
-                    dst,
-                    damage,
-                    opaque_regions,
-                    cache,
-                );
+                let result = match &self.solid {
+                    Some(texture) => Frame::render_texture_from_to(
+                        frame,
+                        texture,
+                        src,
+                        dst,
+                        damage,
+                        opaque_regions,
+                        inner.transform(),
+                        inner.alpha(),
+                    ),
+                    None => RenderElement::<GlesRenderer>::draw(
+                        inner,
+                        frame,
+                        src,
+                        dst,
+                        damage,
+                        opaque_regions,
+                        cache,
+                    ),
+                };
                 frame.clear_tex_program_override();
                 if std::env::var_os("SHOJI_GAP_DEBUG")
                     .is_some_and(|value| value != "0" && !value.is_empty())
