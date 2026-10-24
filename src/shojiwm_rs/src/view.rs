@@ -349,6 +349,13 @@ impl Element {
         })
     }
 
+    /// Whether a press on an interactive [`Popup`] away from its buttons
+    /// moves its window, like a title bar drawn over the client (default
+    /// `false`).
+    pub fn moves_window(self, value: bool) -> Self {
+        self.popup_option("moves_window", |popup| popup.moves_window = value)
+    }
+
     fn popup_callbacks(mut self, name: &str, set: impl FnOnce(&mut PopupCallbacks)) -> Self {
         match &mut self.kind {
             ElementKind::Popup { callbacks, .. } => set(callbacks),

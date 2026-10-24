@@ -64,6 +64,7 @@ pub struct WireProps {
     pub mode: Option<String>,
     pub close_on_escape: Option<bool>,
     pub close_on_outside_press: Option<bool>,
+    pub moves_window: Option<bool>,
     pub on_open_change: Option<WirePopupDismissHandlers>,
     pub on_interest_change: Option<WireStateChangeHandler>,
     pub on_anchor_press: Option<WireRuntimeHandler>,
@@ -1505,6 +1506,7 @@ fn parse_popup(props: &WireProps) -> Result<PopupNode, DecorationBridgeError> {
         close_on_outside_press: props
             .close_on_outside_press
             .unwrap_or(defaults.close_on_outside_press),
+        moves_window: props.moves_window.unwrap_or(defaults.moves_window),
     })
 }
 

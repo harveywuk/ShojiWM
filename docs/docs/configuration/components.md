@@ -242,6 +242,7 @@ The same with less code is `<Popup trigger="click" mode="auto">`.
 | `onOpenChange` | `(open, reason) => void` | `"auto"`: the compositor asks it to close |
 | `closeOnEscape` | `boolean` | `"auto"`: Escape closes it (default `true`) |
 | `closeOnOutsidePress` | `boolean` | `"auto"`: a press outside it and its anchor closes it (default `true`) |
+| `movesWindow` | `boolean` | Unless `"hint"`: a press away from its buttons moves the window, like a title bar drawn over the client (default `false`) |
 | `onInterestChange` | `(interested) => void` | The pointer entered / left the anchor or, unless `"hint"`, the popup |
 | `onAnchorPress` | `() => void` | The anchor was pressed |
 | `placement` | `"top" \| "bottom" \| "left" \| "right"` | The side of the anchor it goes to (default `"bottom"`) |

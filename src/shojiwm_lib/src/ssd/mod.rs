@@ -290,9 +290,17 @@ impl ComputedDecorationTree {
         let point = self.root.frame.layout_point(x, y);
         // Interactive popups sit above everything else of the window.
         if let Some(hit) = popup::popup_hit(&self.root, point) {
+            let moves_window = matches!(
+                &hit.popup.kind,
+                DecorationNodeKind::Popup(popup) if popup.moves_window
+            );
             return find_button_action(hit.popup, point)
                 .map(DecorationHitTestResult::Action)
-                .unwrap_or(DecorationHitTestResult::Popup);
+                .unwrap_or(if moves_window {
+                    DecorationHitTestResult::Move
+                } else {
+                    DecorationHitTestResult::Popup
+                });
         }
         if let Some(action) = find_button_action(&self.root, point) {
             return DecorationHitTestResult::Action(action);
@@ -380,15 +388,16 @@ impl ComputedDecorationTree {
     /// the client's input region has a hole, since the decoration under the
     /// client shows through it.
     pub fn takes_input_over_client_at(&self, x: f64, y: f64) -> bool {
+        let point = self.root.frame.layout_point(x, y);
+        if popup::popup_hit(&self.root, point).is_some() {
+            return true;
+        }
         if matches!(
             self.hit_test_at(x, y),
-            DecorationHitTestResult::Action(_)
-                | DecorationHitTestResult::Popup
-                | DecorationHitTestResult::Resize(_)
+            DecorationHitTestResult::Action(_) | DecorationHitTestResult::Resize(_)
         ) {
             return true;
         }
-        let point = self.root.frame.layout_point(x, y);
         has_interaction_target_beside_client(&self.root, point)
     }
 
@@ -6169,6 +6178,65 @@ mod tests {
         assert_eq!(ids(center(item)), ["item", "anchor"]);
         assert_eq!(ids(below_item), ["anchor"]);
         assert_eq!(ids(center(anchor)), ["anchor"]);
+    }
+
+    #[test]
+    fn a_popup_that_moves_its_window_is_a_title_bar_over_the_client() {
+        set_popup_viewports(Vec::new());
+        let layout = |moves_window: bool| {
+            let mut close = sized(
+                DecorationNodeKind::Button(ButtonNode {
+                    action: WindowAction::Close,
+                }),
+                20.0,
+                20.0,
+            );
+            close.stable_id = Some("close".into());
+            // On top, offset by minus its height: over the client's top edge.
+            let mut bar = DecorationNode::new(DecorationNodeKind::Popup(PopupNode {
+                placement: PopupPlacement::Top,
+                offset: -30.0,
+                collision: PopupCollision::None,
+                layer: PopupLayer::Window,
+                mode: PopupMode::Manual,
+                moves_window,
+                ..PopupNode::default()
+            }))
+            .with_children(vec![
+                sized(DecorationNodeKind::Box(BoxNode::default()), 120.0, 30.0)
+                    .with_children(vec![close]),
+            ]);
+            bar.stable_id = Some("bar".into());
+            let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                .with_style(DecorationStyle {
+                    position: Some(StylePosition::Relative),
+                    ..Default::default()
+                })
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot), bar]);
+            DecorationTree::new(root)
+                .layout(LogicalRect::new(100, 100, 200, 150))
+                .expect("layout")
+        };
+
+        let layout_moving = layout(true);
+        let bar = find_by_id(&layout_moving.root, "bar").unwrap().rect;
+        assert_eq!((bar.x, bar.y), (140, 100), "over the top of the client");
+        let close = center(find_by_id(&layout_moving.root, "close").unwrap().rect);
+        let background = (bar.x as f64 + 100.0, bar.y as f64 + 15.0);
+        let below = (bar.x as f64 + 100.0, bar.y as f64 + 80.0);
+        for (layout, off_buttons) in [
+            (layout_moving, DecorationHitTestResult::Move),
+            (layout(false), DecorationHitTestResult::Popup),
+        ] {
+            assert_eq!(
+                layout.hit_test_at(close.0, close.1),
+                DecorationHitTestResult::Action(WindowAction::Close)
+            );
+            assert_eq!(layout.hit_test_at(background.0, background.1), off_buttons);
+            assert!(layout.takes_input_over_client_at(background.0, background.1));
+            assert_eq!(layout.hit_test_at(below.0, below.1), DecorationHitTestResult::ClientArea);
+            assert!(!layout.takes_input_over_client_at(below.0, below.1));
+        }
     }
 
     #[test]

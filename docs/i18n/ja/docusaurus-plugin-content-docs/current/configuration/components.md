@@ -240,6 +240,7 @@ const [open, setOpen] = useState(false);
 | `onOpenChange` | `(open, reason) => void` | `"auto"`: コンポジターから閉じる要求が来た |
 | `closeOnEscape` | `boolean` | `"auto"`: Esc で閉じる（既定 `true`） |
 | `closeOnOutsidePress` | `boolean` | `"auto"`: ポップアップと基準の外を押すと閉じる（既定 `true`） |
+| `movesWindow` | `boolean` | `"hint"` 以外: ボタン以外を押すとウィンドウを移動（クライアントの上に描くタイトルバー。既定 `false`） |
 | `onInterestChange` | `(interested) => void` | ポインターが基準（`"hint"` 以外はポップアップも）に出入りした |
 | `onAnchorPress` | `() => void` | 基準が押された |
 | `placement` | `"top" \| "bottom" \| "left" \| "right"` | 基準のどちら側に出すか（既定 `"bottom"`） |

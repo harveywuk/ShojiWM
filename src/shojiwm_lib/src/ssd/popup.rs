@@ -47,6 +47,9 @@ pub struct PopupNode {
     pub close_on_escape: bool,
     /// `Auto` only: a press outside the popup and its anchor asks it to close.
     pub close_on_outside_press: bool,
+    /// Interactive only: a press on the popup away from its buttons moves its
+    /// window, like a title bar (a bar drawn over the client).
+    pub moves_window: bool,
 }
 
 impl Default for PopupNode {
@@ -61,6 +64,7 @@ impl Default for PopupNode {
             mode: PopupMode::Hint,
             close_on_escape: true,
             close_on_outside_press: true,
+            moves_window: false,
         }
     }
 }

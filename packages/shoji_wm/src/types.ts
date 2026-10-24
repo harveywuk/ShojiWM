@@ -2657,6 +2657,12 @@ export interface PopupProps extends ComponentProps {
    */
   closeOnOutsidePress?: MaybeSignal<boolean>;
   /**
+   * Unless `"hint"`: a press on the popup away from its buttons moves its
+   * window, like a title bar drawn over the window. Default `false`.
+   * `"hint"` 以外: ボタン以外の場所を押すとウィンドウを移動する（ウィンドウの上に描くタイトルバー）。既定 `false`。
+   */
+  movesWindow?: MaybeSignal<boolean>;
+  /**
    * Called with `(false, reason)` when the compositor asks an `"auto"`
    * popup to close. Set your `open` signal to follow it, or keep it open.
    * `"auto"` のポップアップに閉じる要求が来たとき `(false, reason)` で呼ばれます。
