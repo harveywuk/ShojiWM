@@ -4,13 +4,21 @@
 //! readings and subtract them for rates. Read by the control socket's own
 //! thread, so a busy event loop still answers.
 //!
-//! [`DamageProbe`] (`SHOJI_FRAME_DAMAGE_DEBUG`) logs which elements of a frame
-//! changed since the one before: what an age-1 damage tracker would redraw.
+//! [`DamageProbe`] logs which elements of a frame changed since the one
+//! before: what an age-1 damage tracker would redraw. It runs while frame
+//! debugging is on (`SHOJI_FRAME_DAMAGE_DEBUG`, or `shoji_wm --frame-debug on`
+//! in a running session), which also counts `schedule_redraw`'s callers;
+//! `shoji_wm --frame-debug` takes both, as JSON.
 
 use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Mutex,
-    time::Duration,
+    cell::RefCell,
+    collections::{BTreeMap, HashMap, VecDeque},
+    panic::Location,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
@@ -62,6 +70,103 @@ pub fn record_gpu_wait(output: &str, waited: Duration) {
 pub fn json() -> String {
     let frames = FRAMES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     serde_json::to_string(&*frames).unwrap_or_else(|_| "{}".to_owned())
+}
+
+static DEBUGGING: AtomicBool = AtomicBool::new(false);
+
+/// What frame debugging collected since it was last taken.
+struct DebugLog {
+    since: Option<Instant>,
+    redraw_callers: BTreeMap<&'static Location<'static>, u64>,
+    frames: VecDeque<serde_json::Value>,
+    frames_dropped: u64,
+}
+
+static DEBUG_LOG: Mutex<DebugLog> = Mutex::new(DebugLog {
+    since: None,
+    redraw_callers: BTreeMap::new(),
+    frames: VecDeque::new(),
+    frames_dropped: 0,
+});
+
+/// Frames kept between two takes; older ones are dropped and counted.
+const DEBUG_FRAMES: usize = 600;
+
+fn debug_log() -> std::sync::MutexGuard<'static, DebugLog> {
+    DEBUG_LOG.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Whether frame debugging is on.
+pub fn debugging() -> bool {
+    DEBUGGING.load(Ordering::Relaxed) || crate::env_flag!("SHOJI_FRAME_DAMAGE_DEBUG")
+}
+
+/// Turn frame debugging on or off at runtime, starting a fresh log.
+pub fn set_debugging(on: bool) {
+    DEBUGGING.store(on, Ordering::Relaxed);
+    let mut log = debug_log();
+    log.since = on.then(Instant::now);
+    log.redraw_callers.clear();
+    log.frames.clear();
+    log.frames_dropped = 0;
+}
+
+/// Count one `schedule_redraw` call from `caller`, while debugging.
+pub fn record_redraw_caller(caller: &'static Location<'static>) {
+    *debug_log().redraw_callers.entry(caller).or_default() += 1;
+}
+
+/// What frame debugging collected since the last take, as one line of JSON,
+/// and start collecting again: `seconds`, `redraw_callers` (most first) and
+/// `frames` (the changed ones, oldest first).
+pub fn take_debug_json() -> String {
+    let mut log = debug_log();
+    let now = Instant::now();
+    let seconds = log.since.map_or(0.0, |since| now.duration_since(since).as_secs_f64());
+    log.since = debugging().then_some(now);
+    let mut callers = std::mem::take(&mut log.redraw_callers)
+        .into_iter()
+        .map(|(caller, count)| (format!("{}:{}", caller.file(), caller.line()), count))
+        .collect::<Vec<_>>();
+    callers.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    let frames = std::mem::take(&mut log.frames);
+    let dropped = std::mem::take(&mut log.frames_dropped);
+    serde_json::json!({
+        "enabled": debugging(),
+        "seconds": seconds,
+        "redraw_callers": callers,
+        "frames_dropped": dropped,
+        "frames": frames,
+    })
+    .to_string()
+}
+
+fn record_debug_frame(frame: serde_json::Value) {
+    let mut log = debug_log();
+    if log.frames.len() >= DEBUG_FRAMES {
+        log.frames.pop_front();
+        log.frames_dropped += 1;
+    }
+    log.frames.push_back(frame);
+}
+
+thread_local! {
+    /// The render thread's probe per output.
+    static PROBES: RefCell<HashMap<String, DamageProbe>> = RefCell::new(HashMap::new());
+}
+
+/// Probe one frame of `output`'s (see [`DamageProbe::frame`]), while
+/// debugging; `None` when not debugging.
+pub fn probe_frame<E: Element>(output: &Output, elements: &[E]) -> Option<bool> {
+    if !debugging() {
+        // A later session starts from the next frame, not a stale one.
+        if PROBES.with(|probes| !probes.borrow().is_empty()) {
+            PROBES.with(|probes| probes.borrow_mut().clear());
+        }
+        return None;
+    }
+    let name = output.name();
+    Some(PROBES.with(|probes| probes.borrow_mut().entry(name).or_default().frame(output, elements)))
 }
 
 /// One output's elements as last drawn, to tell which changed.
@@ -121,6 +226,17 @@ impl DamageProbe {
         if !changes.is_empty() || damaged_px > 0 {
             let damaged_pct = (damaged_px * 100 / output_px).min(999);
             info!(output, frame = self.frame, elements = elements.len(), damaged_pct, ?changes, "frame damage");
+            let at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as u64);
+            record_debug_frame(serde_json::json!({
+                "output": output,
+                "frame": self.frame,
+                "at_ms": at_ms,
+                "elements": elements.len(),
+                "damaged_pct": damaged_pct,
+                "changes": changes,
+            }));
         }
         damaged_px > 0
     }
@@ -141,5 +257,25 @@ mod tests {
         assert_eq!(all["test-a"]["held_for_gpu"], 1);
         assert_eq!(all["test-a"]["gpu_wait_us"], 1500);
         assert_eq!(all["test-b"]["empty"], 1);
+    }
+
+    #[test]
+    fn debugging_counts_redraw_callers_until_taken() {
+        set_debugging(true);
+        let here = Location::caller();
+        record_redraw_caller(here);
+        record_redraw_caller(here);
+        let taken: serde_json::Value = serde_json::from_str(&take_debug_json()).unwrap();
+        assert_eq!(taken["enabled"], true);
+        let callers = taken["redraw_callers"].as_array().unwrap();
+        let ours = callers
+            .iter()
+            .find(|caller| caller[0] == format!("{}:{}", here.file(), here.line()))
+            .unwrap();
+        assert_eq!(ours[1], 2);
+        let again: serde_json::Value = serde_json::from_str(&take_debug_json()).unwrap();
+        assert!(again["redraw_callers"].as_array().unwrap().iter().all(|caller| caller[0] != ours[0]));
+        set_debugging(false);
+        assert!(!DEBUGGING.load(Ordering::Relaxed));
     }
 }

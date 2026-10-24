@@ -1,5 +1,5 @@
 //! Compositor control socket behind `shoji_wm --quit` / `--reload` /
-//! `--frame-stats`.
+//! `--frame-stats` / `--frame-debug`.
 //!
 //! The same two escape hatches as `Super+Shift+Q` / `Super+Shift+R`, reachable
 //! from a terminal, a status bar's click handler or a config keybinding that
@@ -12,11 +12,13 @@
 //!
 //! ```text
 //! client -> server   "quit\n" | "reload\n" | "frame-stats\n"
+//!                    | "frame-debug on\n" | "frame-debug off\n" | "frame-debug\n"
 //! server -> client   "ok\n" | "<one line of JSON>\n" | "error: <message>\n"
 //! ```
 //!
-//! `frame-stats` is answered from this socket's thread with the per-output
-//! counters ([`crate::frame_stats`]), never the event loop's.
+//! `frame-stats` and `frame-debug` are answered from this socket's thread
+//! ([`crate::frame_stats`]), never the event loop's: the per-output counters,
+//! and turning frame debugging on or off or taking what it collected.
 
 use std::{
     ffi::OsStr,
@@ -45,14 +47,25 @@ pub enum Command {
     Quit,
     Reload,
     FrameStats,
+    FrameDebugOn,
+    FrameDebugOff,
+    FrameDebugTake,
 }
 
 impl Command {
+    /// Answered from the socket's thread, with JSON.
+    fn answers_with_json(self) -> bool {
+        matches!(self, Self::FrameStats | Self::FrameDebugTake)
+    }
+
     fn as_str(self) -> &'static str {
         match self {
             Self::Quit => "quit",
             Self::Reload => "reload",
             Self::FrameStats => "frame-stats",
+            Self::FrameDebugOn => "frame-debug on",
+            Self::FrameDebugOff => "frame-debug off",
+            Self::FrameDebugTake => "frame-debug",
         }
     }
 
@@ -61,6 +74,9 @@ impl Command {
             "quit" => Some(Self::Quit),
             "reload" => Some(Self::Reload),
             "frame-stats" => Some(Self::FrameStats),
+            "frame-debug on" => Some(Self::FrameDebugOn),
+            "frame-debug off" => Some(Self::FrameDebugOff),
+            "frame-debug" => Some(Self::FrameDebugTake),
             _ => None,
         }
     }
@@ -111,7 +127,10 @@ pub fn start(loop_handle: &LoopHandle<'static, ShojiWM>, wayland_display: &OsStr
             match command {
                 Command::Quit => state.shutdown(),
                 Command::Reload => state.reload_decoration_runtime(),
-                Command::FrameStats => {}
+                Command::FrameStats
+                | Command::FrameDebugOn
+                | Command::FrameDebugOff
+                | Command::FrameDebugTake => {}
             }
         }
     }) {
@@ -141,6 +160,12 @@ fn serve(listener: UnixListener, sender: Sender<Command>) {
         };
         let reply = match read_command(&stream) {
             Ok(Command::FrameStats) => crate::frame_stats::json(),
+            Ok(Command::FrameDebugTake) => crate::frame_stats::take_debug_json(),
+            Ok(command @ (Command::FrameDebugOn | Command::FrameDebugOff)) => {
+                crate::frame_stats::set_debugging(command == Command::FrameDebugOn);
+                info!(command = command.as_str(), "control socket command");
+                "ok".to_string()
+            }
             Ok(command) => match sender.send(command) {
                 Ok(()) => "ok".to_string(),
                 // The event loop is gone: the compositor is shutting down.
@@ -164,7 +189,7 @@ fn read_command(stream: &UnixStream) -> Result<Command, String> {
 }
 
 /// Client side: send `command` to the running compositor. `Some` carries a
-/// reply with content (`frame-stats`).
+/// reply with content (`frame-stats`, `frame-debug`).
 ///
 /// The socket comes from `SHOJIWM_SOCKET`, or failing that from
 /// `WAYLAND_DISPLAY`, so a shell started inside the session finds it either way.
@@ -192,7 +217,27 @@ pub fn send(command: Command) -> Result<Option<String>, String> {
     match reply.trim() {
         "ok" => Ok(None),
         "" => Err("the compositor closed the connection without answering".to_string()),
-        json if command == Command::FrameStats && json.starts_with('{') => Ok(Some(json.to_string())),
+        json if command.answers_with_json() && json.starts_with('{') => Ok(Some(json.to_string())),
         other => Err(other.strip_prefix("error: ").unwrap_or(other).to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commands_round_trip_through_the_wire_format() {
+        for command in [
+            Command::Quit,
+            Command::Reload,
+            Command::FrameStats,
+            Command::FrameDebugOn,
+            Command::FrameDebugOff,
+            Command::FrameDebugTake,
+        ] {
+            assert_eq!(Command::parse(&format!("{}\n", command.as_str())), Some(command));
+        }
+        assert_eq!(Command::parse("frame-debug maybe"), None);
     }
 }

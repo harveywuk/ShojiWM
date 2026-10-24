@@ -5217,6 +5217,9 @@ fn render_surface(
         } else {
             elements.extend(content_for_capture);
         }
+        // Frame debugging: which elements changed, and what an age-1 damage
+        // tracker would redraw.
+        crate::frame_stats::probe_frame(&output, &elements);
 
         // HDR10 outputs composite the element list into the fp16
         // intermediate, and the DRM pass renders a single PQ-encode element

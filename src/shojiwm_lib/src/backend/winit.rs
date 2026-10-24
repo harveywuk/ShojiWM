@@ -1060,8 +1060,6 @@ pub fn init_winit(
     let mut blink_damage_tracker = OutputDamageTracker::from_mode_source(initial_render_mode);
     // Night light's encode pass (`hdr_pipeline`), as on a TTY output.
     let mut encode_pipeline: Option<crate::backend::hdr_pipeline::HdrPipeline> = None;
-    // `SHOJI_FRAME_DAMAGE_DEBUG`: the frame's damage as an age-1 tracker would see it.
-    let mut damage_probe = crate::frame_stats::DamageProbe::default();
     // Tests that drive a nested session with synthesized input set this, so
     // the host's pointer and keys passing over its window change nothing.
     let ignore_host_input = std::env::var_os("SHOJI_IGNORE_HOST_INPUT").is_some_and(|value| value == "1");
@@ -1430,8 +1428,8 @@ pub fn init_winit(
                                     .map(|mode| Duration::from_secs_f64(1_000f64 / mode.refresh as f64))
                                     .unwrap_or(Duration::ZERO);
                             state.pre_repaint(&output, frame_target);
-                            if crate::env_flag!("SHOJI_FRAME_DAMAGE_DEBUG") {
-                                let damaged = damage_probe.frame(&output, &elements);
+                            // Frame debugging: the frame's damage as an age-1 tracker would see it.
+                            if let Some(damaged) = crate::frame_stats::probe_frame(&output, &elements) {
                                 crate::frame_stats::record(&output.name(), |frames| {
                                     if damaged {
                                         frames.committed += 1;
