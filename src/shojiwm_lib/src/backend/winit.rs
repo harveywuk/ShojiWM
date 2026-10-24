@@ -2138,7 +2138,36 @@ fn backdrop_shader_elements_for_window(
             return Vec::new();
         }
     }
-    let Some(decoration) = state.window_decorations.get(window).cloned() else {
+    // The few fields the backdrops read, copied out: they update the window's
+    // backdrop cache below, so they cannot borrow it, and cloning the whole state
+    // (its tree, layout and buffers) every frame cost more than drawing them.
+    struct BackdropDecoration {
+        id: String,
+        title: String,
+        app_id: Option<String>,
+        root_rect: crate::ssd::LogicalRect,
+        visual_transform: crate::ssd::WindowTransform,
+        root_subpixel_offset: crate::backend::visual::RootSubpixelEdges,
+        shader_buffers: Vec<crate::backend::shader_effect::CachedShaderEffect>,
+    }
+    let Some(decoration) = state.window_decorations.get(window).map(|decoration| BackdropDecoration {
+        id: decoration.snapshot.id.clone(),
+        title: decoration.snapshot.title.clone(),
+        app_id: decoration.snapshot.app_id.clone(),
+        root_rect: decoration.layout.root.rect,
+        visual_transform: decoration.visual_transform,
+        root_subpixel_offset: decoration.root_subpixel_offset,
+        shader_buffers: decoration
+            .shader_buffers
+            .iter()
+            .filter(|cached| {
+                cached.shader.is_texture_backed()
+                    && (!prefer_framebuffer_backdrops
+                        || !cached.shader.supports_framebuffer_backdrop())
+            })
+            .cloned()
+            .collect(),
+    }) else {
         return Vec::new();
     };
     let lower_windows = windows_top_to_bottom
@@ -2157,24 +2186,18 @@ fn backdrop_shader_elements_for_window(
 
     decoration
         .shader_buffers
-        .clone()
         .iter()
-        .filter(|cached| {
-            cached.shader.is_texture_backed()
-                && (!prefer_framebuffer_backdrops
-                    || !cached.shader.supports_framebuffer_backdrop())
-        })
         .filter_map(|cached| {
             let uses_backdrop = cached.shader.uses_backdrop_input();
             let uses_xray = cached.shader.uses_xray_backdrop_input();
             let render_as_backdrop = uses_backdrop || uses_xray;
-            let root_rect = decoration.layout.root.rect;
+            let root_rect = decoration.root_rect;
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             cached.stable_key.hash(&mut hasher);
             let display_rect = if apply_visual_transform {
                 crate::backend::visual::transformed_rect(
                     cached.rect,
-                    decoration.layout.root.rect,
+                    decoration.root_rect,
                     decoration.visual_transform,
                 )
             } else {
@@ -2186,7 +2209,7 @@ fn backdrop_shader_elements_for_window(
                     if apply_visual_transform {
                         crate::backend::visual::transformed_precise_rect(
                             rect,
-                            decoration.layout.root.rect,
+                            decoration.root_rect,
                             decoration.visual_transform,
                         )
                     } else {
@@ -2281,9 +2304,9 @@ fn backdrop_shader_elements_for_window(
 
             if crate::env_flag!("SHOJI_FIREFOX_BACKDROP_DEBUG") {
                 tracing::info!(
-                    window_id = %decoration.snapshot.id,
-                    title = %decoration.snapshot.title,
-                    app_id = ?decoration.snapshot.app_id,
+                    window_id = %decoration.id,
+                    title = %decoration.title,
+                    app_id = ?decoration.app_id,
                     stable_key = %cached.stable_key,
                     source_effect_rect = ?source_effect_rect,
                     display_rect = ?display_rect,
@@ -2325,7 +2348,7 @@ fn backdrop_shader_elements_for_window(
                                 if apply_visual_transform {
                                     crate::backend::visual::transformed_precise_rect(
                                         clip,
-                                        decoration.layout.root.rect,
+                                        decoration.root_rect,
                                         decoration.visual_transform,
                                     )
                                 } else {
@@ -2349,7 +2372,7 @@ fn backdrop_shader_elements_for_window(
                                 let transformed_clip = if apply_visual_transform {
                                     crate::backend::visual::transformed_rect(
                                         clip_rect,
-                                        decoration.layout.root.rect,
+                                        decoration.root_rect,
                                         decoration.visual_transform,
                                     )
                                 } else {
@@ -2418,16 +2441,16 @@ fn backdrop_shader_elements_for_window(
                             .unwrap_or(cached.clip_radius as f32),
                         format!(
                             "window-backdrop:{}:{}",
-                            decoration.snapshot.id, cached.stable_key
+                            decoration.id, cached.stable_key
                         ),
                     )
                     .ok()
                     .map(|element| {
                         if crate::env_flag!("SHOJI_FIREFOX_BACKDROP_DEBUG") {
                             tracing::info!(
-                                window_id = %decoration.snapshot.id,
-                                title = %decoration.snapshot.title,
-                                app_id = ?decoration.snapshot.app_id,
+                                window_id = %decoration.id,
+                                title = %decoration.title,
+                                app_id = ?decoration.app_id,
                                 stable_key = %cached.stable_key,
                                 local_rect = ?local_rect,
                                 local_sample_rect = ?local_sample_rect,
@@ -2538,7 +2561,7 @@ fn backdrop_shader_elements_for_window(
                 renderer,
                 format!(
                     "winit:window-backdrop:{}:{}",
-                    decoration.snapshot.id, cached.stable_key
+                    decoration.id, cached.stable_key
                 ),
                 input_texture,
                 xray_texture,
@@ -2590,7 +2613,7 @@ fn backdrop_shader_elements_for_window(
                         if apply_visual_transform {
                             crate::backend::visual::transformed_precise_rect(
                                 clip,
-                                decoration.layout.root.rect,
+                                decoration.root_rect,
                                 decoration.visual_transform,
                             )
                         } else {
@@ -2614,7 +2637,7 @@ fn backdrop_shader_elements_for_window(
                         let transformed_clip = if apply_visual_transform {
                             crate::backend::visual::transformed_rect(
                                 clip_rect,
-                                decoration.layout.root.rect,
+                                decoration.root_rect,
                                 decoration.visual_transform,
                             )
                         } else {
@@ -2673,16 +2696,16 @@ fn backdrop_shader_elements_for_window(
                     .unwrap_or(cached.clip_radius as f32),
                 format!(
                     "window-backdrop:{}:{}",
-                    decoration.snapshot.id, cached.stable_key
+                    decoration.id, cached.stable_key
                 ),
             )
             .ok()
             .map(|element| {
                 if crate::env_flag!("SHOJI_FIREFOX_BACKDROP_DEBUG") {
                     tracing::info!(
-                        window_id = %decoration.snapshot.id,
-                        title = %decoration.snapshot.title,
-                        app_id = ?decoration.snapshot.app_id,
+                        window_id = %decoration.id,
+                        title = %decoration.title,
+                        app_id = ?decoration.app_id,
                         stable_key = %cached.stable_key,
                         local_rect = ?local_rect,
                         local_sample_rect = ?local_sample_rect,
@@ -4327,13 +4350,29 @@ fn configured_background_effect_elements_for_window(
     let Some(config) = state.configured_background_effect.clone() else {
         return Vec::new();
     };
-    let Some(decoration) = state.window_decorations.get(window).cloned() else {
-        return Vec::new();
-    };
     let rects = protocol_background_effect_rects_for_window(state, window);
     if rects.is_empty() {
         return Vec::new();
     }
+    // What the effect reads of the decoration, copied out: it updates the
+    // window's backdrop cache below, and this ran for every window, every frame,
+    // as a clone of the whole state.
+    struct EffectDecoration {
+        id: String,
+        title: String,
+        app_id: Option<String>,
+        root_rect: crate::ssd::LogicalRect,
+        visual_transform: crate::ssd::WindowTransform,
+    }
+    let Some(decoration) = state.window_decorations.get(window).map(|decoration| EffectDecoration {
+        id: decoration.snapshot.id.clone(),
+        title: decoration.snapshot.title.clone(),
+        app_id: decoration.snapshot.app_id.clone(),
+        root_rect: decoration.layout.root.rect,
+        visual_transform: decoration.visual_transform,
+    }) else {
+        return Vec::new();
+    };
     let lower_windows = windows_top_to_bottom
         .iter()
         .skip(window_index + 1)
@@ -4360,7 +4399,7 @@ fn configured_background_effect_elements_for_window(
             let effect_rect = if apply_visual_transform {
                 crate::backend::visual::transformed_rect(
                     rect,
-                    decoration.layout.root.rect,
+                    decoration.root_rect,
                     decoration.visual_transform,
                 )
             } else {
@@ -4449,8 +4488,8 @@ fn configured_background_effect_elements_for_window(
                 {
                     let local_rect = Rectangle::new(
                         smithay::utils::Point::from((
-                            effect_rect.x - decoration.layout.root.rect.x,
-                            effect_rect.y - decoration.layout.root.rect.y,
+                            effect_rect.x - decoration.root_rect.x,
+                            effect_rect.y - decoration.root_rect.y,
                         )),
                         (effect_rect.width, effect_rect.height).into(),
                     );
@@ -4464,7 +4503,7 @@ fn configured_background_effect_elements_for_window(
                     let geometry =
                         crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
                             effect_rect,
-                            decoration.layout.root.rect,
+                            decoration.root_rect,
                             output_geo,
                             scale,
                         );
@@ -4483,7 +4522,7 @@ fn configured_background_effect_elements_for_window(
                         [0.0, 0.0],
                         None,
                         0.0,
-                        format!("protocol-window:{}:{}", decoration.snapshot.id, stable_key),
+                        format!("protocol-window:{}:{}", decoration.id, stable_key),
                     )
                     .ok()
                     .map(|element| (index, element));
@@ -4547,12 +4586,12 @@ fn configured_background_effect_elements_for_window(
             );
             if crate::env_flag!("SHOJI_FIREFOX_BACKDROP_DEBUG") {
                 tracing::info!(
-                    window_id = %decoration.snapshot.id,
-                    title = %decoration.snapshot.title,
-                    app_id = ?decoration.snapshot.app_id,
+                    window_id = %decoration.id,
+                    title = %decoration.title,
+                    app_id = ?decoration.app_id,
                     stable_key = %stable_key,
                     effect_rect = ?effect_rect,
-                    root_rect = ?decoration.layout.root.rect,
+                    root_rect = ?decoration.root_rect,
                     output_geo = ?output_geo,
                     blur_padding,
                     capture_geo = ?capture_geo,
@@ -4562,8 +4601,8 @@ fn configured_background_effect_elements_for_window(
                     output_size = ?output_size,
                     local_rect = ?Rectangle::<i32, Logical>::new(
                         smithay::utils::Point::from((
-                            effect_rect.x - decoration.layout.root.rect.x,
-                            effect_rect.y - decoration.layout.root.rect.y,
+                            effect_rect.x - decoration.root_rect.x,
+                            effect_rect.y - decoration.root_rect.y,
                         )),
                         (effect_rect.width, effect_rect.height).into(),
                     ),
@@ -4576,7 +4615,7 @@ fn configured_background_effect_elements_for_window(
                     ),
                     geometry = ?crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
                         effect_rect,
-                        decoration.layout.root.rect,
+                        decoration.root_rect,
                         output_geo,
                         scale,
                     ),
@@ -4587,7 +4626,7 @@ fn configured_background_effect_elements_for_window(
                 renderer,
                 format!(
                     "winit:protocol-window:{}:{}",
-                    decoration.snapshot.id, stable_key
+                    decoration.id, stable_key
                 ),
                 input_texture,
                 xray_texture,
@@ -4626,8 +4665,8 @@ fn configured_background_effect_elements_for_window(
             }
             let local_rect = Rectangle::new(
                 smithay::utils::Point::from((
-                    effect_rect.x - decoration.layout.root.rect.x,
-                    effect_rect.y - decoration.layout.root.rect.y,
+                    effect_rect.x - decoration.root_rect.x,
+                    effect_rect.y - decoration.root_rect.y,
                 )),
                 (effect_rect.width, effect_rect.height).into(),
             );
@@ -4641,7 +4680,7 @@ fn configured_background_effect_elements_for_window(
             let geometry =
                 crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
                     effect_rect,
-                    decoration.layout.root.rect,
+                    decoration.root_rect,
                     output_geo,
                     scale,
                 );
@@ -4670,7 +4709,7 @@ fn configured_background_effect_elements_for_window(
                 [0.0, 0.0],
                 None,
                 0.0,
-                format!("protocol-window:{}:{}", decoration.snapshot.id, stable_key),
+                format!("protocol-window:{}:{}", decoration.id, stable_key),
             )
             .ok()
             .map(|element| (index, element))
