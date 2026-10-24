@@ -41,6 +41,7 @@ pub mod control_socket;
 pub mod cursor;
 pub mod dnd;
 pub mod frame_pacing;
+pub mod frame_stats;
 pub mod drawing;
 pub mod foreign_toplevel;
 pub mod grabs;
@@ -112,7 +113,12 @@ pub fn run(launcher: impl RuntimeLauncher + 'static) -> ExitCode {
     }
     if let Some(command) = args.control_command {
         return match control_socket::send(command) {
-            Ok(()) => ExitCode::SUCCESS,
+            Ok(reply) => {
+                if let Some(reply) = reply {
+                    println!("{reply}");
+                }
+                ExitCode::SUCCESS
+            }
             Err(error) => {
                 eprintln!("Error: {error}");
                 ExitCode::FAILURE

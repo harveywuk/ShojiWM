@@ -1060,6 +1060,8 @@ pub fn init_winit(
     let mut blink_damage_tracker = OutputDamageTracker::from_mode_source(initial_render_mode);
     // Night light's encode pass (`hdr_pipeline`), as on a TTY output.
     let mut encode_pipeline: Option<crate::backend::hdr_pipeline::HdrPipeline> = None;
+    // `SHOJI_FRAME_DAMAGE_DEBUG`: the frame's damage as an age-1 tracker would see it.
+    let mut damage_probe = crate::frame_stats::DamageProbe::default();
     // Tests that drive a nested session with synthesized input set this, so
     // the host's pointer and keys passing over its window change nothing.
     let ignore_host_input = std::env::var_os("SHOJI_IGNORE_HOST_INPUT").is_some_and(|value| value == "1");
@@ -1258,7 +1260,7 @@ pub fn init_winit(
                         }
                         let scene_elements = built.elements;
                         let composition_presentation = built.presentation;
-                        let mut overlay_below_layers = built.below_layers;
+                        let overlay_below_layers = built.below_layers;
 
                         let computed_damage = if state.damage_blink_enabled {
                             match blink_damage_tracker.damage_output(1, &scene_elements) {
@@ -1284,12 +1286,6 @@ pub fn init_winit(
                         }
 
                         let mut content_elements: Vec<WinitRenderElements> = Vec::new();
-                        content_elements.extend(
-                            damage::elements_for_output(&extra_damage, output_geo)
-                                .into_iter()
-                                .map(WinitRenderElements::Damage),
-                        );
-                        overlay_below_layers += content_elements.len();
                         content_elements.extend(scene_elements);
                         if !state.session_lock_active {
                             state.output_overlays.render(renderer, &output,
@@ -1325,6 +1321,15 @@ pub fn init_winit(
                         }
 
                         let mut elements: Vec<WinitRenderElements> = Vec::new();
+                        // The output's damage element, topmost so that it never
+                        // moves in the stack (`damage::element_for_output`).
+                        if !state.session_lock_active {
+                            elements.push(WinitRenderElements::Damage(damage::element_for_output(
+                                &output.name(),
+                                &extra_damage,
+                                output_geo,
+                            )));
+                        }
                         let error_text_elements = crate::config_error::text_elements_for_output(
                             renderer,
                             &mut state.text_rasterizer,
@@ -1425,6 +1430,16 @@ pub fn init_winit(
                                     .map(|mode| Duration::from_secs_f64(1_000f64 / mode.refresh as f64))
                                     .unwrap_or(Duration::ZERO);
                             state.pre_repaint(&output, frame_target);
+                            if crate::env_flag!("SHOJI_FRAME_DAMAGE_DEBUG") {
+                                let damaged = damage_probe.frame(&output, &elements);
+                                crate::frame_stats::record(&output.name(), |frames| {
+                                    if damaged {
+                                        frames.committed += 1;
+                                    } else {
+                                        frames.empty += 1;
+                                    }
+                                });
+                            }
 
                             let output_lut = state.output_lut(&output.name());
                             if output_lut.is_none() {

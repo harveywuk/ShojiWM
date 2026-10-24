@@ -5187,6 +5187,8 @@ impl ShojiWM {
         Some(lut)
     }
 
+    /// `SHOJI_REDRAW_STATS` / `SHOJI_REDRAW_REASON_DEBUG` name the caller.
+    #[track_caller]
     pub fn schedule_redraw(&mut self) {
         let caller = std::panic::Location::caller();
         if std::env::var_os("SHOJI_REDRAW_STATS")

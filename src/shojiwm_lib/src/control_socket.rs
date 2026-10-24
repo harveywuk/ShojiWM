@@ -1,4 +1,5 @@
-//! Compositor control socket behind `shoji_wm --quit` / `--reload`.
+//! Compositor control socket behind `shoji_wm --quit` / `--reload` /
+//! `--frame-stats`.
 //!
 //! The same two escape hatches as `Super+Shift+Q` / `Super+Shift+R`, reachable
 //! from a terminal, a status bar's click handler or a config keybinding that
@@ -10,9 +11,12 @@
 //! `SHOJIWM_SOCKET`. The wire format is one command per connection:
 //!
 //! ```text
-//! client -> server   "quit\n" | "reload\n"
-//! server -> client   "ok\n" | "error: <message>\n"
+//! client -> server   "quit\n" | "reload\n" | "frame-stats\n"
+//! server -> client   "ok\n" | "<one line of JSON>\n" | "error: <message>\n"
 //! ```
+//!
+//! `frame-stats` is answered from this socket's thread with the per-output
+//! counters ([`crate::frame_stats`]), never the event loop's.
 
 use std::{
     ffi::OsStr,
@@ -40,6 +44,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(2);
 pub enum Command {
     Quit,
     Reload,
+    FrameStats,
 }
 
 impl Command {
@@ -47,6 +52,7 @@ impl Command {
         match self {
             Self::Quit => "quit",
             Self::Reload => "reload",
+            Self::FrameStats => "frame-stats",
         }
     }
 
@@ -54,6 +60,7 @@ impl Command {
         match line.trim() {
             "quit" => Some(Self::Quit),
             "reload" => Some(Self::Reload),
+            "frame-stats" => Some(Self::FrameStats),
             _ => None,
         }
     }
@@ -104,6 +111,7 @@ pub fn start(loop_handle: &LoopHandle<'static, ShojiWM>, wayland_display: &OsStr
             match command {
                 Command::Quit => state.shutdown(),
                 Command::Reload => state.reload_decoration_runtime(),
+                Command::FrameStats => {}
             }
         }
     }) {
@@ -132,6 +140,7 @@ fn serve(listener: UnixListener, sender: Sender<Command>) {
             continue;
         };
         let reply = match read_command(&stream) {
+            Ok(Command::FrameStats) => crate::frame_stats::json(),
             Ok(command) => match sender.send(command) {
                 Ok(()) => "ok".to_string(),
                 // The event loop is gone: the compositor is shutting down.
@@ -154,11 +163,12 @@ fn read_command(stream: &UnixStream) -> Result<Command, String> {
     Command::parse(&line).ok_or_else(|| format!("unknown command {:?}", line.trim()))
 }
 
-/// Client side: send `command` to the running compositor.
+/// Client side: send `command` to the running compositor. `Some` carries a
+/// reply with content (`frame-stats`).
 ///
 /// The socket comes from `SHOJIWM_SOCKET`, or failing that from
 /// `WAYLAND_DISPLAY`, so a shell started inside the session finds it either way.
-pub fn send(command: Command) -> Result<(), String> {
+pub fn send(command: Command) -> Result<Option<String>, String> {
     let path = std::env::var_os(SOCKET_ENV)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
@@ -180,8 +190,9 @@ pub fn send(command: Command) -> Result<(), String> {
         .read_line(&mut reply)
         .map_err(|error| error.to_string())?;
     match reply.trim() {
-        "ok" => Ok(()),
+        "ok" => Ok(None),
         "" => Err("the compositor closed the connection without answering".to_string()),
+        json if command == Command::FrameStats && json.starts_with('{') => Ok(Some(json.to_string())),
         other => Err(other.strip_prefix("error: ").unwrap_or(other).to_string()),
     }
 }

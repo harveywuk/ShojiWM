@@ -31,8 +31,8 @@ pub struct CommonArgs {
     pub extra: BTreeMap<String, String>,
     pub help: bool,
     pub version: bool,
-    /// `-q/--quit` or `-r/--reload`: tell the running compositor to do that
-    /// instead of starting one.
+    /// `-q/--quit`, `-r/--reload` or `--frame-stats`: tell the running
+    /// compositor to do that (or ask it) instead of starting one.
     pub control_command: Option<crate::control_socket::Command>,
 }
 
@@ -82,6 +82,8 @@ impl CommonArgs {
                 Some(crate::control_socket::Command::Quit)
             } else if flag("--reload") || flag("-r") {
                 Some(crate::control_socket::Command::Reload)
+            } else if flag("--frame-stats") {
+                Some(crate::control_socket::Command::FrameStats)
             } else {
                 None
             },
@@ -101,6 +103,7 @@ const COMMON_HELP: &[(&str, &str)] = &[
     ("--xwayland-satellite-glamor <gl|es|none>", "Glamor mode for Xwayland [SHOJI_XWAYLAND_SATELLITE_GLAMOR]"),
     ("-q, --quit", "Quit the running ShojiWM (same as Super+Shift+Q)"),
     ("-r, --reload", "Reload the running ShojiWM's config (same as Super+Shift+R)"),
+    ("--frame-stats", "Print the running ShojiWM's per-output frame counters as JSON"),
     ("-h, --help", "Print this help"),
     ("-V, --version", "Print the version"),
 ];
