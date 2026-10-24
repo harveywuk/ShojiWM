@@ -338,6 +338,11 @@ pub struct ShojiWM {
     pub active_idle_inhibit_labels: Vec<String>,
     pub session_lock_state: SessionLockManagerState,
     pub session_lock_active: bool,
+    /// The lock object holding the current lock. While it is alive no other
+    /// client may lock (ext-session-lock-v1), which is what keeps a second
+    /// client from locking and then unlocking someone else's lock. `None` while
+    /// unlocked, and while started locked until the first locker takes over.
+    pub session_locker: Option<smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1>,
     pub session_lock_surfaces: HashMap<String, LockSurface>,
     /// Live capture sessions, kept alive so dropping doesn't auto-send
     /// `stopped` to clients. Keyed by source id.
@@ -1828,6 +1833,7 @@ impl ShojiWM {
             // Started locked (a login screen made of the lock screen): only
             // lock surfaces are drawn until a locker locks and unlocks.
             session_lock_active: runtime.start_locked(),
+            session_locker: None,
             session_lock_surfaces: HashMap::new(),
             image_copy_capture_sessions: std::collections::HashMap::new(),
             image_copy_capture_pending: Vec::new(),
