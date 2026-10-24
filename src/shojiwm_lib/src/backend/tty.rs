@@ -6561,7 +6561,7 @@ fn transform_clipped_elements(
 }
 
 /// `WindowClipElement`s as scene elements, in order. `Clipped` and
-/// `ColorConverted` both draw through the clipped-surface shader.
+/// `Subsurface` both draw through the clipped-surface shader.
 fn window_clip_elements_to_tty(
     elements: Vec<window_render::WindowClipElement>,
     visual: WindowVisualState,
@@ -6570,7 +6570,7 @@ fn window_clip_elements_to_tty(
         .into_iter()
         .flat_map(|element| match element {
             window_render::WindowClipElement::Clipped(element)
-            | window_render::WindowClipElement::ColorConverted(element) => {
+            | window_render::WindowClipElement::Subsurface(element) => {
                 transform_clipped_elements(vec![element], visual)
             }
             window_render::WindowClipElement::Raw(element) => transform_window_elements(
@@ -6647,7 +6647,7 @@ fn window_surface_source_elements_for_window(
                     root_raw_element = Some(element);
                 }
                 window_render::WindowClipElement::Raw(_)
-                | window_render::WindowClipElement::ColorConverted(_) => {}
+                | window_render::WindowClipElement::Subsurface(_) => {}
             }
         }
         if let Some(element) = root_raw_element {
@@ -11777,7 +11777,7 @@ fn window_scene_elements_for_capture(
             for element in clipped {
                 match element {
                     window_render::WindowClipElement::Clipped(element)
-                    | window_render::WindowClipElement::ColorConverted(element) => {
+                    | window_render::WindowClipElement::Subsurface(element) => {
                         clipped_elements.push(element);
                     }
                     window_render::WindowClipElement::Raw(element) => {
@@ -15346,7 +15346,7 @@ fn tty_window_stack_elements(
                             window_render::WindowClipElement::Raw(_) => {}
                             // A subsurface; only scenes that take every client
                             // surface include it, as with the clipped ones.
-                            window_render::WindowClipElement::ColorConverted(element) => {
+                            window_render::WindowClipElement::Subsurface(element) => {
                                 if clip_all_client_surfaces {
                                     snapshot_scene.push(TtyRenderElements::Clipped(element));
                                 }
@@ -15534,7 +15534,7 @@ fn tty_window_stack_elements(
                 if crate::env_flag!("SHOJI_GAP_DEBUG") {
                     let first_geometry = clipped.first().map(|element| match element {
                         window_render::WindowClipElement::Clipped(element)
-                        | window_render::WindowClipElement::ColorConverted(element) => {
+                        | window_render::WindowClipElement::Subsurface(element) => {
                             smithay::backend::renderer::element::Element::geometry(
                                 element, scale,
                             )
@@ -15967,7 +15967,7 @@ fn tty_window_stack_elements(
                         .into_iter()
                         .flat_map(|element| match element {
                             window_render::WindowClipElement::Clipped(element)
-                            | window_render::WindowClipElement::ColorConverted(element) => {
+                            | window_render::WindowClipElement::Subsurface(element) => {
                                 transform_clipped_elements(vec![element], visual_state)
                             }
                             window_render::WindowClipElement::Raw(element) => {
@@ -16045,7 +16045,7 @@ fn tty_window_stack_elements(
                     .into_iter()
                     .flat_map(|element| match element {
                         window_render::WindowClipElement::Clipped(element)
-                        | window_render::WindowClipElement::ColorConverted(element) => {
+                        | window_render::WindowClipElement::Subsurface(element) => {
                             transform_clipped_elements(vec![element], visual_state)
                         }
                         window_render::WindowClipElement::Raw(element) => {

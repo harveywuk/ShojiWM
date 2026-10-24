@@ -52,9 +52,67 @@ pub enum WindowClipElement {
     /// The root surface, clipped (or color converted, see `color_converted`).
     Clipped(ClippedSurfaceElement),
     Raw(WaylandSurfaceRenderElement<GlesRenderer>),
-    /// A subsurface whose color-management tag needs converting; it is drawn
-    /// unclipped, like `Raw`. Never the root: callers take `Clipped` for that.
-    ColorConverted(ClippedSurfaceElement),
+    /// A subsurface drawn through the clipped-surface shader: color converted
+    /// (its tag needs it) or clipped to the window's rounded corners (it
+    /// reaches into one, `ClipCorners`). Never the root: callers take
+    /// `Clipped` for that.
+    Subsurface(ClippedSurfaceElement),
+}
+
+/// Where a window's content clip rounds its corners, in output physical
+/// pixels: the slot the client is cut to, and the squares at the mask's
+/// corners (at its largest radius).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ClipCorners {
+    slot: Rectangle<i32, Physical>,
+    corners: [Rectangle<i32, Physical>; 4],
+}
+
+impl ClipCorners {
+    /// `None` for a clip without rounded corners.
+    fn new(clip: &ContentClip, output_origin: Point<i32, Logical>, scale: Scale<f64>) -> Option<Self> {
+        let radius = clip.corner_radii_precise.into_iter().fold(0.0f32, f32::max);
+        if radius <= 0.0 {
+            return None;
+        }
+        // Outward to whole pixels: a subsurface on the edge still counts.
+        let to_physical = |rect: crate::backend::visual::PreciseLogicalRect| {
+            let left = ((f64::from(rect.x) - f64::from(output_origin.x)) * scale.x).floor() as i32;
+            let top = ((f64::from(rect.y) - f64::from(output_origin.y)) * scale.y).floor() as i32;
+            let right = ((f64::from(rect.x + rect.width) - f64::from(output_origin.x)) * scale.x).ceil() as i32;
+            let bottom = ((f64::from(rect.y + rect.height) - f64::from(output_origin.y)) * scale.y).ceil() as i32;
+            Rectangle::<i32, Physical>::new((left, top).into(), (right - left, bottom - top).into())
+        };
+        let slot = to_physical(clip.rect_precise);
+        let mask = to_physical(clip.mask_rect_precise);
+        let radius = (f64::from(radius) * scale.x.max(scale.y)).ceil() as i32;
+        let (left, top) = (mask.loc.x, mask.loc.y);
+        let (right, bottom) = (left + mask.size.w, top + mask.size.h);
+        let square = |x: i32, y: i32| Rectangle::new((x, y).into(), (radius, radius).into());
+        Some(Self {
+            slot,
+            corners: [
+                square(left, top),
+                square(right - radius, top),
+                square(left, bottom - radius),
+                square(right - radius, bottom - radius),
+            ],
+        })
+    }
+
+    /// Whether a subsurface drawn at `geometry` is window content reaching
+    /// into a rounded corner: centred inside the slot, over one of the
+    /// corners. Firefox draws its whole window in such a subsurface, so left
+    /// unclipped its square corners showed past the frame. Others stay as
+    /// they are: one clear of the corners (a video) can still go on a plane,
+    /// one mostly outside the window (Chrome's popup-like ones) is not cut.
+    fn take(&self, geometry: Rectangle<i32, Physical>) -> bool {
+        let centre = Point::<i32, Physical>::from((
+            geometry.loc.x + geometry.size.w / 2,
+            geometry.loc.y + geometry.size.h / 2,
+        ));
+        self.slot.contains(centre) && self.corners.iter().any(|corner| corner.overlaps(geometry))
+    }
 }
 
 /// Color-management tags of a window's surface tree, keyed by the element id
@@ -149,7 +207,7 @@ fn raw_or_color_converted(
     Ok(if is_root {
         WindowClipElement::Clipped(converted)
     } else {
-        WindowClipElement::ColorConverted(converted)
+        WindowClipElement::Subsurface(converted)
     })
 }
 
@@ -1166,13 +1224,16 @@ pub fn clipped_surface_elements(
         Some(clip) if matches!(window.underlying_surface(), WindowSurface::Wayland(_)) => {
             // CSS-like parent clipping belongs to the toplevel/root surface. Subsurfaces are
             // separate protocol surfaces and may intentionally extend outside the root surface
-            // (Chrome uses some subsurfaces like popups). Do not infer the root element from the
-            // render-element order: Smithay traverses the surface tree in paint order, so a
-            // below-sibling subsurface can appear before the root. Match by resource id instead.
+            // (Chrome uses some subsurfaces like popups), so they stay unclipped unless they are
+            // window content reaching into a rounded corner (`ClipCorners::take`). Do not infer
+            // the root element from the render-element order: Smithay traverses the surface tree
+            // in paint order, so a below-sibling subsurface can appear before the root. Match by
+            // resource id instead.
             let root_id = match window.underlying_surface() {
                 WindowSurface::Wayland(surface) => Id::from_wayland_resource(surface.wl_surface()),
                 WindowSurface::X11(_) => unreachable!("Wayland branch already checked"),
             };
+            let corners = ClipCorners::new(&clip, output_origin, output_scale);
             let mut output = Vec::with_capacity(elements.len());
             for element in elements {
                 if Element::id(&element) == &root_id {
@@ -1192,6 +1253,23 @@ pub fn clipped_surface_elements(
                         output_origin,
                         clip,
                         geometry,
+                        debug_label.clone(),
+                        element_description,
+                    )?));
+                } else if corners.is_some_and(|corners| {
+                    corners.take(Element::geometry(&element, output_scale))
+                }) {
+                    let element_description =
+                        surface_descriptions.get(Element::id(&element)).copied();
+                    // At its own geometry: the slot only places the root.
+                    output.push(WindowClipElement::Subsurface(ClippedSurfaceElement::new(
+                        renderer,
+                        element,
+                        output_scale,
+                        clip_scale,
+                        output_origin,
+                        clip,
+                        None,
                         debug_label.clone(),
                         element_description,
                     )?));
@@ -1282,6 +1360,57 @@ pub fn clipped_popup_elements(
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod clip_corner_tests {
+    use super::*;
+    use crate::backend::visual::{PreciseLogicalRect, RectSnapMode};
+
+    fn clip(x: f32, y: f32, width: f32, height: f32, radius: f32) -> ContentClip {
+        let precise = PreciseLogicalRect { x, y, width, height };
+        let rect = Rectangle::new((x as i32, y as i32).into(), (width as i32, height as i32).into());
+        ContentClip {
+            rect,
+            rect_precise: precise,
+            clips_surface: true,
+            mask_rect: rect,
+            mask_rect_precise: precise,
+            radius: 0,
+            radius_precise: 0.0,
+            corner_radii: [radius as i32; 4],
+            corner_radii_precise: [radius; 4],
+            snap_mode: RectSnapMode::SharedEdges,
+        }
+    }
+
+    fn physical(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn window_content_in_a_subsurface_takes_the_rounded_clip() {
+        // A window at (113, 113) on an output whose origin is (100, 100).
+        let corners = ClipCorners::new(&clip(113.0, 113.0, 1230.0, 670.0, 15.0), Point::from((100, 100)), Scale::from(1.0))
+            .unwrap();
+        assert_eq!(corners.slot, physical(13, 13, 1230, 670));
+        // Firefox: the whole window in a subsurface, even while it lags the slot.
+        assert!(corners.take(physical(13, 13, 1230, 670)));
+        assert!(corners.take(physical(13, 13, 1200, 696)));
+        // A video in the middle, clear of the corners, stays as it is.
+        assert!(!corners.take(physical(300, 200, 640, 360)));
+        // So does one reaching out of the window from its corner.
+        assert!(!corners.take(physical(1200, 650, 400, 300)));
+    }
+
+    #[test]
+    fn square_corners_leave_subsurfaces_alone() {
+        assert_eq!(ClipCorners::new(&clip(0.0, 0.0, 800.0, 600.0, 0.0), Point::from((0, 0)), Scale::from(1.0)), None);
+        // At scale 2 the corner squares double with the rest.
+        let corners = ClipCorners::new(&clip(0.0, 0.0, 400.0, 300.0, 10.0), Point::from((0, 0)), Scale::from(2.0)).unwrap();
+        assert_eq!(corners.slot, physical(0, 0, 800, 600));
+        assert_eq!(corners.corners[3], physical(780, 580, 20, 20));
+    }
 }
 
 #[cfg(test)]

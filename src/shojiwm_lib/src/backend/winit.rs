@@ -4895,7 +4895,7 @@ fn window_scene_elements_for_capture(
             for element in clipped {
                 match element {
                     window_render::WindowClipElement::Clipped(element)
-                    | window_render::WindowClipElement::ColorConverted(element) => {
+                    | window_render::WindowClipElement::Subsurface(element) => {
                         clipped_elements.push(element);
                     }
                     window_render::WindowClipElement::Raw(element) => {
@@ -5900,7 +5900,7 @@ fn winit_window_stack_elements(
                         .first()
                         .map(|element| match element {
                             window_render::WindowClipElement::Clipped(element)
-                            | window_render::WindowClipElement::ColorConverted(element) => smithay::backend::renderer::element::Element::geometry(element, scale),
+                            | window_render::WindowClipElement::Subsurface(element) => smithay::backend::renderer::element::Element::geometry(element, scale),
                             window_render::WindowClipElement::Raw(element) => smithay::backend::renderer::element::Element::geometry(element, scale),
                         });
                     let window_geometry = window.geometry();
@@ -6012,7 +6012,7 @@ fn winit_window_stack_elements(
                         .into_iter()
                         .flat_map(|element| match element {
                             window_render::WindowClipElement::Clipped(element)
-                            | window_render::WindowClipElement::ColorConverted(element) => {
+                            | window_render::WindowClipElement::Subsurface(element) => {
                                 transform_clipped_elements(vec![element], composition_visual)
                             }
                             window_render::WindowClipElement::Raw(element) => {
@@ -6084,7 +6084,7 @@ fn winit_window_stack_elements(
                     .into_iter()
                     .flat_map(|element| match element {
                         window_render::WindowClipElement::Clipped(element)
-                        | window_render::WindowClipElement::ColorConverted(element) => {
+                        | window_render::WindowClipElement::Subsurface(element) => {
                             transform_clipped_elements(vec![element], composition_visual)
                         }
                         window_render::WindowClipElement::Raw(element) => {
