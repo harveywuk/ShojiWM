@@ -3882,15 +3882,52 @@ impl RenderElement<GlesRenderer> for ProfiledTtyRenderElement<'_> {
             self.draw_label,
             (dst.size.w, dst.size.h),
         );
-        let result = RenderElement::<GlesRenderer>::draw(
-            self.inner,
-            frame,
-            src,
-            dst,
-            damage,
-            opaque_regions,
-            cache,
-        );
+        let draw = |frame: &mut GlesFrame<'_, '_>| {
+            RenderElement::<GlesRenderer>::draw(
+                self.inner,
+                frame,
+                src,
+                dst,
+                damage,
+                opaque_regions,
+                cache,
+            )
+        };
+        // The main thread's time per element kind, for ShojiWM's profiler.
+        let result = match self.draw_label {
+            "tty-element-window-draw" => {
+                timescope::scope!("tty draw window");
+                draw(frame)
+            }
+            "tty-element-clipped-draw" => {
+                timescope::scope!("tty draw clipped window");
+                draw(frame)
+            }
+            "tty-element-text-draw" => {
+                timescope::scope!("tty draw text");
+                draw(frame)
+            }
+            "tty-element-snapshot-draw" => {
+                timescope::scope!("tty draw snapshot");
+                draw(frame)
+            }
+            "tty-element-decoration-draw" => {
+                timescope::scope!("tty draw decoration");
+                draw(frame)
+            }
+            "tty-element-backdrop-draw" => {
+                timescope::scope!("tty draw backdrop");
+                draw(frame)
+            }
+            "tty-element-cursor-draw" => {
+                timescope::scope!("tty draw cursor");
+                draw(frame)
+            }
+            _ => {
+                timescope::scope!("tty draw other");
+                draw(frame)
+            }
+        };
         crate::backend::shader_effect::end_gpu_timing_frame_span(frame, timing);
         result
     }
@@ -3906,6 +3943,7 @@ impl RenderElement<GlesRenderer> for ProfiledTtyRenderElement<'_> {
         dst: Rectangle<i32, Physical>,
         cache: &UserDataMap,
     ) -> Result<(), GlesError> {
+        timescope::scope!("tty capture framebuffer");
         let timing = crate::backend::shader_effect::begin_gpu_timing_frame_span(
             frame,
             "tty-element-framebuffer-capture",
@@ -5551,7 +5589,10 @@ fn render_surface_frame(
                             element.id(),
                         ));
                     }
-                    if crate::backend::shader_effect::gpu_element_timing_debug_enabled() {
+                    // Also while ShojiWM's profiler runs, which times each element kind.
+                    if crate::backend::shader_effect::gpu_element_timing_debug_enabled()
+                        || timescope::is_profile_enabled()
+                    {
                         let profiled_elements = elements
                             .iter()
                             .map(ProfiledTtyRenderElement::new)
