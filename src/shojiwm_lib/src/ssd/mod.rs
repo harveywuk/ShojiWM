@@ -744,6 +744,9 @@ pub struct DecorationInteractionHandlers {
     /// Told the node's laid-out size whenever it changes, as
     /// `"{handler}:{width}:{height}"` (logical pixels).
     pub size_change: Option<String>,
+    /// Told the node's laid-out rect whenever it changes, from the
+    /// window's root, as `"{handler}:{x}:{y}:{width}:{height}"`.
+    pub rect_change: Option<String>,
 }
 
 impl DecorationInteractionHandlers {

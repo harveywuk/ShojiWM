@@ -2776,24 +2776,30 @@ impl ShojiWM {
         result
     }
 
-    /// Tell the nodes that asked for their size (`size_change`) what their
-    /// laid-out size now is, once for each change.
+    /// Tell the nodes that asked for their size or rect (`size_change`,
+    /// `rect_change`) what it now is, once for each change.
     fn report_decoration_sizes(&mut self) {
         let mut reports = Vec::new();
         let decorations = &self.window_decorations;
         self.decoration_size_reports.retain(|window, _| decorations.contains_key(window));
         for (window, decoration) in &self.window_decorations {
             let mut sizes = Vec::new();
-            collect_size_handlers(&decoration.layout.root, &mut sizes);
+            let root = decoration.layout.root.rect;
+            collect_size_handlers(&decoration.layout.root, (root.x, root.y), &mut sizes);
             if sizes.is_empty() {
                 self.decoration_size_reports.remove(window);
                 continue;
             }
             let reported = self.decoration_size_reports.entry(window.clone()).or_default();
-            reported.retain(|handler, _| sizes.iter().any(|(current, _)| current == handler));
-            for (handler, size) in sizes {
-                if reported.insert(handler.clone(), size) != Some(size) {
-                    reports.push((window.clone(), format!("{handler}:{}:{}", size.0, size.1)));
+            reported.retain(|handler, _| sizes.iter().any(|(current, ..)| current == handler));
+            for (handler, rect, positioned) in sizes {
+                if reported.insert(handler.clone(), rect) != Some(rect) {
+                    let [x, y, width, height] = rect;
+                    reports.push((window.clone(), if positioned {
+                        format!("{handler}:{x}:{y}:{width}:{height}")
+                    } else {
+                        format!("{handler}:{width}:{height}")
+                    }));
                 }
             }
         }
@@ -6610,13 +6616,19 @@ impl DecorationTree {
     }
 }
 
-/// Every node of `node`'s tree that asked for its size, with that size.
-fn collect_size_handlers(node: &super::ComputedDecorationNode, sizes: &mut Vec<(String, (i32, i32))>) {
+/// Every node of `node`'s tree that asked for its size or its rect, with
+/// that rect from `origin` (the window's root) and whether it asked for
+/// its place too (a size alone comes as x and y 0).
+fn collect_size_handlers(node: &super::ComputedDecorationNode, origin: (i32, i32), sizes: &mut Vec<(String, [i32; 4], bool)>) {
+    let rect = node.rect;
     if let Some(handler) = &node.interaction.size_change {
-        sizes.push((handler.clone(), (node.rect.width, node.rect.height)));
+        sizes.push((handler.clone(), [0, 0, rect.width, rect.height], false));
+    }
+    if let Some(handler) = &node.interaction.rect_change {
+        sizes.push((handler.clone(), [rect.x - origin.0, rect.y - origin.1, rect.width, rect.height], true));
     }
     for child in &node.children {
-        collect_size_handlers(child, sizes);
+        collect_size_handlers(child, origin, sizes);
     }
 }
 
@@ -8573,7 +8585,7 @@ mod tests {
         let mut page = column(120.0);
         page.interaction.size_change = Some("w/0#size".into());
         let mut inner = column(30.0);
-        inner.interaction.size_change = Some("w/0/0#size".into());
+        inner.interaction.rect_change = Some("w/0/0#rect".into());
         page = page.with_children(vec![inner]);
         let layout = DecorationTree::new(
             DecorationNode::new(DecorationNodeKind::Box(BoxNode { direction: LayoutDirection::Column }))
@@ -8582,8 +8594,12 @@ mod tests {
         .layout_for_client(LogicalRect::new(0, 200, 100, 100))
         .unwrap();
         let mut sizes = Vec::new();
-        collect_size_handlers(&layout.root, &mut sizes);
-        assert_eq!(sizes, [("w/0#size".to_owned(), (80, 120)), ("w/0/0#size".to_owned(), (80, 30))]);
+        let root = layout.root.rect;
+        collect_size_handlers(&layout.root, (root.x, root.y), &mut sizes);
+        assert_eq!(sizes, [
+            ("w/0#size".to_owned(), [0, 0, 80, 120], false),
+            ("w/0/0#rect".to_owned(), [0, 0, 80, 30], true),
+        ]);
     }
 
     #[test]

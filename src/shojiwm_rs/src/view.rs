@@ -202,6 +202,8 @@ thread_local! {
     pub(crate) static SCROLL: std::cell::RefCell<Option<ScrollEvent>> = const { std::cell::RefCell::new(None) };
     /// The laid-out size being delivered to an `on_size` handler, unscaled.
     pub(crate) static SIZE: Cell<Option<(f64, f64)>> = const { Cell::new(None) };
+    /// The laid-out rect being delivered to an `on_rect` handler, unscaled.
+    pub(crate) static RECT: Cell<Option<[f64; 4]>> = const { Cell::new(None) };
 }
 
 /// A decoration node under construction.
@@ -217,6 +219,7 @@ pub struct Element {
     on_hover_change: Option<Rc<dyn Fn(bool)>>,
     on_active_change: Option<Rc<dyn Fn(bool)>>,
     on_size: Option<Rc<dyn Fn(f64, f64)>>,
+    on_rect: Option<Rc<dyn Fn(Rect)>>,
     paint: Option<Box<PaintShader>>,
     overlay: Option<Box<PaintShader>>,
     children: Vec<Child>,
@@ -235,6 +238,7 @@ impl Element {
             on_hover_change: None,
             on_active_change: None,
             on_size: None,
+            on_rect: None,
             paint: None,
             overlay: None,
             children: Vec::new(),
@@ -509,6 +513,14 @@ impl Element {
     /// after the change.
     pub fn on_size(mut self, f: impl Fn(f64, f64) + 'static) -> Self {
         self.on_size = Some(Rc::new(f));
+        self
+    }
+
+    /// Be told this node's laid-out rect, from its window's top-left, in
+    /// this view's lengths, whenever it changes (as [`on_size`](Self::on_size),
+    /// a frame after it does): where a row of a scrolled page is now.
+    pub fn on_rect(mut self, f: impl Fn(Rect) + 'static) -> Self {
+        self.on_rect = Some(Rc::new(f));
         self
     }
 }
@@ -1097,6 +1109,19 @@ impl MountedNode {
                 }),
             );
         }
+        if let Some(handler) = &element.on_rect {
+            let handler = handler.clone();
+            let ui_scale = context.ui_scale.clone();
+            context.register_handler(
+                format!("{id}#rect"),
+                Rc::new(move || {
+                    if let Some([x, y, width, height]) = RECT.with(Cell::take) {
+                        let scale = ui_scale.get();
+                        handler(Rect::new(x / scale, y / scale, width / scale, height / scale));
+                    }
+                }),
+            );
+        }
         if let ElementKind::Popup { popup, callbacks, .. } = &element.kind {
             register_popup_handlers(context, &id, popup, callbacks);
         }
@@ -1285,6 +1310,7 @@ impl MountedNode {
                 _ => None,
             },
             size_change: element.on_size.as_ref().map(|_| format!("{id}#size")),
+            rect_change: element.on_rect.as_ref().map(|_| format!("{id}#rect")),
         };
         let window_border_interaction = match &element.kind {
             ElementKind::WindowBorder { interaction } => *interaction,

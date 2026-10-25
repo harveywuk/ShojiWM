@@ -586,6 +586,7 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
                     .transpose()?,
                 popup: popup_handlers,
                 size_change: None,
+                rect_change: None,
             },
             window_border_interaction,
             kind,

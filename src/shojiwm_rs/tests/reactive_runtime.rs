@@ -601,16 +601,17 @@ fn a_node_hears_its_size_and_the_scrolls_over_its_controls() {
 
     let sizes = Rc::new(RefCell::new(Vec::new()));
     let scrolls = Rc::new(RefCell::new(Vec::new()));
+    let rects = Rc::new(RefCell::new(Vec::new()));
     let host = RuntimeHost::detached();
     let args = CommonArgs::parse(&[], &[]);
     let mut runtime = RuntimeBoot::new(
         Box::new(ConfigBuilder::new({
-            let (sizes, scrolls) = (sizes.clone(), scrolls.clone());
+            let (sizes, scrolls, rects) = (sizes.clone(), scrolls.clone(), rects.clone());
             move || {
-                let (sizes, scrolls) = (sizes.clone(), scrolls.clone());
+                let (sizes, scrolls, rects) = (sizes.clone(), scrolls.clone(), rects.clone());
                 COMPOSITOR.window.composition(move |window| {
                     window.set_ui_scale(2.0);
-                    let (sizes, scrolls) = (sizes.clone(), scrolls.clone());
+                    let (sizes, scrolls, rects) = (sizes.clone(), scrolls.clone(), rects.clone());
                     // A page that scrolls, with a control that does not.
                     ManagedWindow::new().rect(Rect::new(0.0, 0.0, 400.0, 300.0)).child(
                         Flex::column()
@@ -618,7 +619,12 @@ fn a_node_hears_its_size_and_the_scrolls_over_its_controls() {
                                 Button::new()
                                     .on_scroll(move |event| scrolls.borrow_mut().push(event.delta_y))
                                     .on_size(move |width, height| sizes.borrow_mut().push((width, height)))
-                                    .child(Button::new().on_click(|| {}).style(Style::new().size(20.0, 20.0))),
+                                    .child(
+                                        Button::new()
+                                            .on_click(|| {})
+                                            .on_rect(move |rect| rects.borrow_mut().push((rect.x, rect.y, rect.width, rect.height)))
+                                            .style(Style::new().size(20.0, 20.0)),
+                                    ),
                             )
                             .child(ClientWindow::new()),
                     )
@@ -645,6 +651,10 @@ fn a_node_hears_its_size_and_the_scrolls_over_its_controls() {
         panic!("the control's click should be a runtime handler")
     };
     let node = click.rsplit_once('#').unwrap().0;
+    // The control's place too, from the window's top-left.
+    let rect = page.children[0].interaction.rect_change.clone().expect("the control asks for its rect");
+    assert!(runtime.invoke_handler("w1", &format!("{rect}:10:20:30:40"), 2).unwrap().invoked);
+    assert_eq!(*rects.borrow(), [(5.0, 10.0, 15.0, 20.0)]);
     // A scroll over the control goes to the page round it.
     assert!(runtime.invoke_handler("w1", &format!("{node}#scroll:0:12:::finger:0"), 3).unwrap().invoked);
     assert_eq!(*scrolls.borrow(), [12.0]);
