@@ -2342,11 +2342,13 @@ impl ShojiWM {
                             },
                         );
                         // The left button clicks; the right one is a
-                        // secondary click (`on_secondary_click`); the
-                        // others do nothing.
+                        // secondary click (`on_secondary_click`), the
+                        // middle one a middle click (`on_middle_click`);
+                        // the others do nothing.
                         let target = match button {
                             272 => Some(handler_id.clone()),
                             273 => Some(decoration_handler_variant(&handler_id, "secondary")),
+                            274 => Some(decoration_handler_variant(&handler_id, "middle")),
                             _ => None,
                         };
                         if let Some(target) = target {
@@ -3955,7 +3957,7 @@ mod pointer_motion_space_tests {
 }
 
 /// `"{node}#click"` (or `#none`) as another of the node's handlers:
-/// `"{node}#secondary"`, `"{node}#scroll"`.
+/// `"{node}#secondary"`, `"{node}#middle"`, `"{node}#scroll"`.
 fn decoration_handler_variant(handler_id: &str, kind: &str) -> String {
     let node = handler_id.rsplit_once('#').map_or(handler_id, |(node, _)| node);
     format!("{node}#{kind}")
@@ -3966,6 +3968,7 @@ mod decoration_handler_tests {
     #[test]
     fn variants_keep_the_node() {
         assert_eq!(super::decoration_handler_variant("w/0.2#click", "secondary"), "w/0.2#secondary");
+        assert_eq!(super::decoration_handler_variant("w/0.2#click", "middle"), "w/0.2#middle");
         assert_eq!(super::decoration_handler_variant("w/0.2#none", "scroll"), "w/0.2#scroll");
     }
 }

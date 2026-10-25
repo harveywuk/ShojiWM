@@ -214,6 +214,7 @@ pub struct Element {
     key: Option<String>,
     on_click: Option<ClickAction>,
     on_secondary_click: Option<Rc<dyn Fn()>>,
+    on_middle_click: Option<Rc<dyn Fn()>>,
     on_scroll: Option<Rc<dyn Fn(&ScrollEvent)>>,
     on_drop: Option<Rc<dyn Fn(&[String])>>,
     on_hover_change: Option<Rc<dyn Fn(bool)>>,
@@ -233,6 +234,7 @@ impl Element {
             key: None,
             on_click: None,
             on_secondary_click: None,
+            on_middle_click: None,
             on_scroll: None,
             on_drop: None,
             on_hover_change: None,
@@ -479,6 +481,12 @@ impl Element {
     /// Run `f` on a right click. Only [`Button`]s are hit by the pointer.
     pub fn on_secondary_click(mut self, f: impl Fn() + 'static) -> Self {
         self.on_secondary_click = Some(Rc::new(f));
+        self
+    }
+
+    /// Run `f` on a middle click. Only [`Button`]s are hit by the pointer.
+    pub fn on_middle_click(mut self, f: impl Fn() + 'static) -> Self {
+        self.on_middle_click = Some(Rc::new(f));
         self
     }
 
@@ -1074,6 +1082,9 @@ impl MountedNode {
         }
         if let Some(handler) = &element.on_secondary_click {
             context.register_handler(format!("{id}#secondary"), handler.clone());
+        }
+        if let Some(handler) = &element.on_middle_click {
+            context.register_handler(format!("{id}#middle"), handler.clone());
         }
         if let Some(handler) = &element.on_drop {
             let handler = handler.clone();
