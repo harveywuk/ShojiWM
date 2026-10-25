@@ -711,10 +711,13 @@ impl CompositorHandler for ShojiWM {
                                 rect,
                             }),
                     );
-                if let Some(decoration) = self.window_decorations.get(&window) {
-                    self.pending_decoration_damage
-                        .push(decoration.layout.root.rect);
-                }
+                // The commit damages only what the client drew: its surface's
+                // own damage, through the window clip. The decoration does not
+                // change with it (its elements report their own changes), and
+                // backdrop effects over the window re-capture where that
+                // damage reaches them. Damaging the whole decorated window on
+                // every commit repainted the frame, and every blur near it, for
+                // a terminal's blinking cursor.
                 if let Some(top) = window.toplevel() {
                     debug!(surface = ?top.wl_surface().id(), "toplevel commit matched mapped window");
                 }
