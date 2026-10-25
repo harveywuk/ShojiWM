@@ -2767,12 +2767,7 @@ fn reclip_transformed(node: &mut ComputedDecorationNode, inherited_clip: Option<
         }
     });
     node.resolved_effective_clip = match (inherited_clip, own) {
-        // Moved wholly outside its clip, it shows nothing (no clip at all
-        // would draw it in full).
-        (Some(parent), Some(current)) => Some(intersect_resolved_decoration_clips(parent, current).unwrap_or(ResolvedDecorationClip {
-            rect: ResolvedLogicalRect { width: ResolvedLayoutValue::ZERO, height: ResolvedLayoutValue::ZERO, ..parent.rect },
-            radius: ResolvedLayoutValue::ZERO,
-        })),
+        (Some(parent), Some(current)) => Some(clip_within(parent, current)),
         (Some(parent), None) => Some(parent),
         (None, current) => current,
     };
@@ -3672,7 +3667,7 @@ fn effective_clip_for_node_resolved(
     });
 
     match (inherited_clip, node_clip) {
-        (Some(parent), Some(current)) => intersect_resolved_decoration_clips(parent, current),
+        (Some(parent), Some(current)) => Some(clip_within(parent, current)),
         (Some(parent), None) => Some(parent),
         (None, Some(current)) => Some(current),
         (None, None) => None,
@@ -3690,6 +3685,17 @@ fn node_style_clips_children(style: &DecorationStyle) -> bool {
     // placement marker rather than an SSD container.
     style.clips_children()
         || (style.has_border() && !matches!(style.overflow, Some(Overflow::Visible)))
+}
+
+/// A node's clip, `current`, inside its ancestors', `parent`. Empty where
+/// they do not meet: a node moved wholly outside its clip (transformed, or
+/// a scrolled page's row) shows nothing and takes no hits, where no clip at
+/// all would draw it in full.
+fn clip_within(parent: ResolvedDecorationClip, current: ResolvedDecorationClip) -> ResolvedDecorationClip {
+    intersect_resolved_decoration_clips(parent, current).unwrap_or(ResolvedDecorationClip {
+        rect: ResolvedLogicalRect { width: ResolvedLayoutValue::ZERO, height: ResolvedLayoutValue::ZERO, ..parent.rect },
+        radius: ResolvedLayoutValue::ZERO,
+    })
 }
 
 fn intersect_resolved_decoration_clips(
@@ -3795,6 +3801,42 @@ mod tests {
             tree.validate(),
             Err(DecorationValidationError::WindowSlotHasChildren)
         );
+    }
+
+    #[test]
+    fn a_clipped_node_scrolled_out_of_its_clip_shows_and_takes_nothing() {
+        let column = || DecorationNode::new(DecorationNodeKind::Box(BoxNode { direction: LayoutDirection::Column }));
+        // A page's row, its title clipped, scrolled above the room it is
+        // seen through (50 to 90).
+        let button = DecorationNode::new(DecorationNodeKind::Button(ButtonNode { action: WindowAction::Close }))
+            .with_style(DecorationStyle { width: Some(20.0), height: Some(20.0), ..Default::default() });
+        let row = column()
+            .with_style(DecorationStyle {
+                width: Some(100.0),
+                height: Some(30.0),
+                position: Some(StylePosition::Absolute),
+                inset: PositionOffsets { top: Some(-45.0), left: Some(0.0), ..Default::default() },
+                overflow: Some(Overflow::Hidden),
+                ..Default::default()
+            })
+            .with_children(vec![button]);
+        let room = column()
+            .with_style(DecorationStyle {
+                height: Some(40.0),
+                margin: Edges { top: 50.0, ..Default::default() },
+                position: Some(StylePosition::Relative),
+                overflow: Some(Overflow::Hidden),
+                ..Default::default()
+            })
+            .with_children(vec![row]);
+        let layout = DecorationTree::new(column().with_children(vec![room, DecorationNode::new(DecorationNodeKind::WindowSlot)]))
+            .layout(LogicalRect::new(0, 0, 100, 200))
+            .expect("layout should succeed");
+        let row = &layout.root.children[0].children[0];
+        assert_eq!(row.rect.y, 5, "the row sits above the room");
+        let clip = row.effective_clip.expect("a clip, if an empty one");
+        assert_eq!((clip.rect.width, clip.rect.height), (0, 0));
+        assert_eq!(layout.hit_test(LogicalPoint::new(10, 10)), DecorationHitTestResult::Move, "its button takes no press");
     }
 
     #[test]
