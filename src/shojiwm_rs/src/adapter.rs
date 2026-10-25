@@ -609,6 +609,16 @@ fn invoke_handler(window_id: &str, handler_id: &str) -> DecorationHandlerInvocat
             true
         }));
     }
+    // "{node}#size:{width}:{height}": the node's laid-out size.
+    if let Some((node, payload)) = handler_id.split_once("#size:") {
+        let size = payload.split_once(':').and_then(|(width, height)| Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?)));
+        crate::view::SIZE.with(|slot| slot.set(size));
+        let handler = runtime::window_entry(window_id).and_then(|entry| entry.context.handlers.borrow().get(&format!("{node}#size")).cloned());
+        return handler_invocation(handler.is_some_and(|handler| {
+            batch(|| handler());
+            true
+        }));
+    }
     // A node that takes drops: its click handler without the marker.
     let handler_id = handler_id.strip_suffix(shojiwm_lib::dnd::DROP_SUFFIX).unwrap_or(handler_id);
     // "{node}#scroll:{payload}": the event goes alongside the handler.

@@ -585,6 +585,7 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
                     .map(TryInto::try_into)
                     .transpose()?,
                 popup: popup_handlers,
+                size_change: None,
             },
             window_border_interaction,
             kind,

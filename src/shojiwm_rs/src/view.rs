@@ -200,6 +200,8 @@ thread_local! {
     pub(crate) static DROPPED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The scroll being delivered to an `on_scroll` handler.
     pub(crate) static SCROLL: std::cell::RefCell<Option<ScrollEvent>> = const { std::cell::RefCell::new(None) };
+    /// The laid-out size being delivered to an `on_size` handler, unscaled.
+    pub(crate) static SIZE: Cell<Option<(f64, f64)>> = const { Cell::new(None) };
 }
 
 /// A decoration node under construction.
@@ -214,6 +216,7 @@ pub struct Element {
     on_drop: Option<Rc<dyn Fn(&[String])>>,
     on_hover_change: Option<Rc<dyn Fn(bool)>>,
     on_active_change: Option<Rc<dyn Fn(bool)>>,
+    on_size: Option<Rc<dyn Fn(f64, f64)>>,
     paint: Option<Box<PaintShader>>,
     overlay: Option<Box<PaintShader>>,
     children: Vec<Child>,
@@ -231,6 +234,7 @@ impl Element {
             on_drop: None,
             on_hover_change: None,
             on_active_change: None,
+            on_size: None,
             paint: None,
             overlay: None,
             children: Vec::new(),
@@ -497,6 +501,14 @@ impl Element {
 
     pub fn on_active_change(mut self, f: impl Fn(bool) + 'static) -> Self {
         self.on_active_change = Some(Rc::new(f));
+        self
+    }
+
+    /// Be told this node's laid-out size, in this view's lengths, whenever
+    /// it changes: the compositor lays the tree out, so this comes a frame
+    /// after the change.
+    pub fn on_size(mut self, f: impl Fn(f64, f64) + 'static) -> Self {
+        self.on_size = Some(Rc::new(f));
         self
     }
 }
@@ -1072,6 +1084,19 @@ impl MountedNode {
                 }),
             );
         }
+        if let Some(handler) = &element.on_size {
+            let handler = handler.clone();
+            let ui_scale = context.ui_scale.clone();
+            context.register_handler(
+                format!("{id}#size"),
+                Rc::new(move || {
+                    if let Some((width, height)) = SIZE.with(Cell::take) {
+                        let scale = ui_scale.get();
+                        handler(width / scale, height / scale);
+                    }
+                }),
+            );
+        }
         if let ElementKind::Popup { popup, callbacks, .. } = &element.kind {
             register_popup_handlers(context, &id, popup, callbacks);
         }
@@ -1259,6 +1284,7 @@ impl MountedNode {
                 ElementKind::Popup { popup, callbacks, .. } => popup_handlers(&id, popup, callbacks),
                 _ => None,
             },
+            size_change: element.on_size.as_ref().map(|_| format!("{id}#size")),
         };
         let window_border_interaction = match &element.kind {
             ElementKind::WindowBorder { interaction } => *interaction,

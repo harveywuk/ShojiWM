@@ -373,6 +373,9 @@ pub struct ShojiWM {
     /// The GPU clients render with (the one the linux-dmabuf global advertises). Never closed.
     pub tty_render_node: Option<DrmNode>,
     pub window_decorations: HashMap<Window, WindowDecorationState>,
+    /// The sizes last told to each window's nodes that asked for theirs
+    /// (`DecorationInteractionHandlers::size_change`), by handler.
+    pub decoration_size_reports: HashMap<Window, HashMap<String, (i32, i32)>>,
     pub window_decoration_negotiations: crate::window_decoration::WindowDecorationNegotiationMap,
     pub window_primary_output_names: HashMap<Window, String>,
     pub windows_ready_for_decoration: HashSet<String>,
@@ -1853,6 +1856,7 @@ impl ShojiWM {
             tty_device_paths: HashMap::new(),
             tty_render_node: None,
             window_decorations: HashMap::new(),
+            decoration_size_reports: HashMap::new(),
             window_decoration_negotiations: HashMap::new(),
             window_primary_output_names: HashMap::new(),
             windows_ready_for_decoration: HashSet::new(),

@@ -741,6 +741,9 @@ pub struct DecorationInteractionHandlers {
     pub active_change: Option<DecorationStateChangeHandler>,
     /// `<Popup>` nodes only.
     pub popup: Option<Box<popup::PopupHandlers>>,
+    /// Told the node's laid-out size whenever it changes, as
+    /// `"{handler}:{width}:{height}"` (logical pixels).
+    pub size_change: Option<String>,
 }
 
 impl DecorationInteractionHandlers {

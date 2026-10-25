@@ -2771,8 +2771,37 @@ impl ShojiWM {
         if outermost {
             // Closed by the pass, unless it failed before its end.
             self.runtime_dirty_marked_during_refresh = None;
+            self.report_decoration_sizes();
         }
         result
+    }
+
+    /// Tell the nodes that asked for their size (`size_change`) what their
+    /// laid-out size now is, once for each change.
+    fn report_decoration_sizes(&mut self) {
+        let mut reports = Vec::new();
+        let decorations = &self.window_decorations;
+        self.decoration_size_reports.retain(|window, _| decorations.contains_key(window));
+        for (window, decoration) in &self.window_decorations {
+            let mut sizes = Vec::new();
+            collect_size_handlers(&decoration.layout.root, &mut sizes);
+            if sizes.is_empty() {
+                self.decoration_size_reports.remove(window);
+                continue;
+            }
+            let reported = self.decoration_size_reports.entry(window.clone()).or_default();
+            reported.retain(|handler, _| sizes.iter().any(|(current, _)| current == handler));
+            for (handler, size) in sizes {
+                if reported.insert(handler.clone(), size) != Some(size) {
+                    reports.push((window.clone(), format!("{handler}:{}:{}", size.0, size.1)));
+                }
+            }
+        }
+        // Recorded first: a handler can run another refresh, which then has
+        // nothing new to tell.
+        for (window, handler) in reports {
+            self.invoke_decoration_handler(&window, &handler);
+        }
     }
 
     fn refresh_window_decorations_pass(
@@ -6581,6 +6610,16 @@ impl DecorationTree {
     }
 }
 
+/// Every node of `node`'s tree that asked for its size, with that size.
+fn collect_size_handlers(node: &super::ComputedDecorationNode, sizes: &mut Vec<(String, (i32, i32))>) {
+    if let Some(handler) = &node.interaction.size_change {
+        sizes.push((handler.clone(), (node.rect.width, node.rect.height)));
+    }
+    for child in &node.children {
+        collect_size_handlers(child, sizes);
+    }
+}
+
 /// Physical pixels a root of integer logical size `width × height` gains from
 /// its managed rect's sub-logical-pixel edges.
 fn root_subpixel_extra_px(
@@ -8524,6 +8563,28 @@ mod tests {
         BorderStyle, BoxNode, Color, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
         LayoutDirection, Overflow, StylePosition,
     };
+
+    #[test]
+    fn nodes_that_ask_are_told_their_laid_out_size() {
+        let column = |height| {
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode { direction: LayoutDirection::Column }))
+                .with_style(DecorationStyle { width: Some(80.0), height: Some(height), ..Default::default() })
+        };
+        let mut page = column(120.0);
+        page.interaction.size_change = Some("w/0#size".into());
+        let mut inner = column(30.0);
+        inner.interaction.size_change = Some("w/0/0#size".into());
+        page = page.with_children(vec![inner]);
+        let layout = DecorationTree::new(
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode { direction: LayoutDirection::Column }))
+                .with_children(vec![page, column(10.0), DecorationNode::new(DecorationNodeKind::WindowSlot)]),
+        )
+        .layout_for_client(LogicalRect::new(0, 200, 100, 100))
+        .unwrap();
+        let mut sizes = Vec::new();
+        collect_size_handlers(&layout.root, &mut sizes);
+        assert_eq!(sizes, [("w/0#size".to_owned(), (80, 120)), ("w/0/0#size".to_owned(), (80, 30))]);
+    }
 
     #[test]
     fn a_gradient_alone_fills_the_box() {
