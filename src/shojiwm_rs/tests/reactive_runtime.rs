@@ -594,3 +594,60 @@ fn drag_views_follow_the_drag_and_go_with_their_animation() {
     runtime.scheduler_tick(1120.0).unwrap();
     assert!(views(drain()).iter().any(|command| matches!(command, DragViewCommand::Dispose { .. })));
 }
+
+#[test]
+fn a_node_hears_its_size_and_the_scrolls_over_its_controls() {
+    use std::{cell::RefCell, rc::Rc};
+
+    let sizes = Rc::new(RefCell::new(Vec::new()));
+    let scrolls = Rc::new(RefCell::new(Vec::new()));
+    let host = RuntimeHost::detached();
+    let args = CommonArgs::parse(&[], &[]);
+    let mut runtime = RuntimeBoot::new(
+        Box::new(ConfigBuilder::new({
+            let (sizes, scrolls) = (sizes.clone(), scrolls.clone());
+            move || {
+                let (sizes, scrolls) = (sizes.clone(), scrolls.clone());
+                COMPOSITOR.window.composition(move |window| {
+                    window.set_ui_scale(2.0);
+                    let (sizes, scrolls) = (sizes.clone(), scrolls.clone());
+                    // A page that scrolls, with a control that does not.
+                    ManagedWindow::new().rect(Rect::new(0.0, 0.0, 400.0, 300.0)).child(
+                        Flex::column()
+                            .child(
+                                Button::new()
+                                    .on_scroll(move |event| scrolls.borrow_mut().push(event.delta_y))
+                                    .on_size(move |width, height| sizes.borrow_mut().push((width, height)))
+                                    .child(Button::new().on_click(|| {}).style(Style::new().size(20.0, 20.0))),
+                            )
+                            .child(ClientWindow::new()),
+                    )
+                });
+            }
+        })),
+        &args,
+    )
+    .launch(host);
+    runtime.preload().unwrap();
+    runtime.enable().unwrap();
+
+    let evaluation = runtime.evaluate_window(&snapshot("w1", "page", true), 1).unwrap();
+    let page = find(&evaluation.node, &|node| node.interaction.size_change.is_some()).expect("the page asks for its size");
+    let handler = page.interaction.size_change.clone().unwrap();
+    // The compositor's logical pixels, in the view's own lengths (UI scale 2).
+    assert!(runtime.invoke_handler("w1", &format!("{handler}:300:120"), 2).unwrap().invoked);
+    assert_eq!(*sizes.borrow(), [(150.0, 60.0)]);
+
+    let DecorationNodeKind::Button(control) = &page.children[0].kind else {
+        panic!("the control should be a button")
+    };
+    let WindowAction::RuntimeHandler(click) = &control.action else {
+        panic!("the control's click should be a runtime handler")
+    };
+    let node = click.rsplit_once('#').unwrap().0;
+    // A scroll over the control goes to the page round it.
+    assert!(runtime.invoke_handler("w1", &format!("{node}#scroll:0:12:::finger:0"), 3).unwrap().invoked);
+    assert_eq!(*scrolls.borrow(), [12.0]);
+    // A node outside any that scrolls still takes nothing.
+    assert!(!runtime.invoke_handler("w1", "nowhere/0#scroll:0:12:::finger:0", 4).unwrap().invoked);
+}

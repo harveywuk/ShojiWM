@@ -630,8 +630,22 @@ fn invoke_handler(window_id: &str, handler_id: &str) -> DecorationHandlerInvocat
         return handler_invocation(false);
     }
     crate::view::SCROLL.with(|slot| *slot.borrow_mut() = scroll);
-    let handler = runtime::window_entry(window_id)
-        .and_then(|entry| entry.context.handlers.borrow().get(&handler_id).cloned());
+    let handler = runtime::window_entry(window_id).and_then(|entry| {
+        let handlers = entry.context.handlers.borrow();
+        if let Some(handler) = handlers.get(&handler_id) {
+            return Some(handler.clone());
+        }
+        // Scrolling over a node that does not take it goes to the nearest
+        // one around it that does: a page round its controls.
+        let mut node = handler_id.strip_suffix("#scroll")?;
+        while let Some((parent, _)) = node.rsplit_once('/') {
+            if let Some(handler) = handlers.get(&format!("{parent}#scroll")) {
+                return Some(handler.clone());
+            }
+            node = parent;
+        }
+        None
+    });
     let invoked = match handler {
         Some(handler) => {
             batch(|| handler());
