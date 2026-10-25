@@ -7,14 +7,20 @@ edition = "2024"
 [dependencies]
 bitflags = "2.11.0"
 thiserror = "2.0.12"
+# bea4dev's Smithay (its shojiwm branch) plus upstream fixes it lacks, picked
+# without changes: damage with empty opaque rects and back to front,
+# xdg-output instances freed, modifiers sent after the key, enter and down
+# for new pointers and touches, negative region sizes, the layer and lock
+# surface hooks after their role is gone, the X11 event loop leak and frame
+# throttling. The shoji-island branch of harveywuk/smithay.
 smithay = {
-    git = "https://github.com/bea4dev/smithay.git",
-    rev = "c1253794ee2a7c466e88bb20dfdaabb4ccbfb2aa",
+    git = "https://github.com/harveywuk/smithay.git",
+    rev = "2143aac4570ecab7bcd6d4cbd261678ac2a70ead",
     features = ["use_system_lib", "xwayland"]
 }
 smithay-drm-extras = {
-    git = "https://github.com/bea4dev/smithay.git",
-    rev = "c1253794ee2a7c466e88bb20dfdaabb4ccbfb2aa",
+    git = "https://github.com/harveywuk/smithay.git",
+    rev = "2143aac4570ecab7bcd6d4cbd261678ac2a70ead",
     package = "smithay-drm-extras",
     default-features = false
 }

@@ -187,7 +187,7 @@ mod tests {
     use super::*;
 
     /// What an age-1 tracker repaints for one frame of `elements`.
-    fn damage(tracker: &mut OutputDamageTracker, elements: &[DamageOnlyElement]) -> Vec<Rectangle<i32, Physical>> {
+    fn damage<E: Element>(tracker: &mut OutputDamageTracker, elements: &[E]) -> Vec<Rectangle<i32, Physical>> {
         tracker.damage_output(1, elements).unwrap().0.cloned().unwrap_or_default()
     }
 
@@ -225,5 +225,122 @@ mod tests {
         }
         let element = element_for_output("test-c", &[], output);
         assert_eq!(damage(&mut tracker, &[element]), vec![Rectangle::from_size((800, 600).into())]);
+    }
+
+    /// A surface for [`damage_above_a_backdrop_leaves_it_alone`]: a window, its
+    /// blurred backdrop (a framebuffer effect) or the wallpaper.
+    #[derive(Clone)]
+    enum Layer {
+        Output(DamageOnlyElement),
+        Surface {
+            id: Id,
+            rect: Rectangle<i32, Physical>,
+            opaque: Vec<Rectangle<i32, Physical>>,
+            capture_padding: Option<i32>,
+        },
+    }
+
+    impl Element for Layer {
+        fn id(&self) -> &Id {
+            match self {
+                Layer::Output(element) => element.id(),
+                Layer::Surface { id, .. } => id,
+            }
+        }
+
+        fn current_commit(&self) -> CommitCounter {
+            match self {
+                Layer::Output(element) => element.current_commit(),
+                Layer::Surface { .. } => CommitCounter::default(),
+            }
+        }
+
+        fn src(&self) -> Rectangle<f64, Buffer> {
+            match self {
+                Layer::Output(element) => element.src(),
+                Layer::Surface { rect, .. } => {
+                    Rectangle::from_size(rect.size.to_f64().to_logical(1.0).to_buffer(1.0, Transform::Normal))
+                }
+            }
+        }
+
+        fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+            match self {
+                Layer::Output(element) => element.geometry(scale),
+                Layer::Surface { rect, .. } => *rect,
+            }
+        }
+
+        fn damage_since(&self, scale: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
+            match self {
+                Layer::Output(element) => element.damage_since(scale, commit),
+                Layer::Surface { .. } => DamageSet::default(),
+            }
+        }
+
+        fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+            match self {
+                Layer::Output(element) => element.opaque_regions(scale),
+                Layer::Surface { opaque, .. } => opaque.iter().copied().collect(),
+            }
+        }
+
+        fn is_framebuffer_effect(&self) -> bool {
+            matches!(self, Layer::Surface { capture_padding: Some(_), .. })
+        }
+
+        fn framebuffer_capture_region(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
+            match self {
+                Layer::Surface { rect, capture_padding: Some(padding), .. } => Rectangle::new(
+                    (rect.loc.x - padding, rect.loc.y - padding).into(),
+                    (rect.size.w + 2 * padding, rect.size.h + 2 * padding).into(),
+                ),
+                _ => self.geometry(Scale::from(1.0)),
+            }
+        }
+    }
+
+    /// The tile beside a blurred window is closer than the blur reaches, so
+    /// its damage falls in the blur's capture region, but above the blur:
+    /// the backdrop is not redrawn for it. smithay before 271a235e redrew it
+    /// every frame once it had been redrawn once: the opaque regions a
+    /// capture cuts away stay behind as empty rects, which counted as
+    /// regions no longer covered.
+    #[test]
+    fn damage_above_a_backdrop_leaves_it_alone() {
+        let output = Rectangle::from_size((1256, 696).into());
+        let mut tracker = OutputDamageTracker::new((1256, 696), 1.0, Transform::Normal);
+        let window = Rectangle::new((13, 13).into(), (669, 670).into());
+        let (kitty, blur, wallpaper) = (Id::new(), Id::new(), Id::new());
+        let frame = |rects: &[LogicalRect]| {
+            vec![
+                Layer::Output(element_for_output("test-backdrop", rects, output)),
+                // Rounded corners: an opaque cross.
+                Layer::Surface {
+                    id: kitty.clone(),
+                    rect: window,
+                    opaque: vec![
+                        Rectangle::new((2, 17).into(), (665, 636).into()),
+                        Rectangle::new((17, 2).into(), (635, 666).into()),
+                    ],
+                    capture_padding: None,
+                },
+                Layer::Surface { id: blur.clone(), rect: window, opaque: vec![], capture_padding: Some(24) },
+                Layer::Surface {
+                    id: wallpaper.clone(),
+                    rect: Rectangle::from_size((1256, 696).into()),
+                    opaque: vec![Rectangle::from_size((1256, 696).into())],
+                    capture_padding: None,
+                },
+            ]
+        };
+        damage(&mut tracker, &frame(&[]));
+        let neighbour = LogicalRect::new(695, 354, 549, 330);
+        for _ in 0..3 {
+            assert_eq!(
+                damage(&mut tracker, &frame(&[neighbour])),
+                vec![Rectangle::new((695, 354).into(), (549, 330).into())]
+            );
+        }
     }
 }
