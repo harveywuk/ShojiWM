@@ -191,9 +191,13 @@ pub fn take_debug_json() -> String {
             (output, serde_json::json!({"drawn": named(&drawn), "unchanged": named(&unchanged)}))
         })
         .collect::<serde_json::Map<_, _>>();
+    let (taken, held) = crate::backend::shader_effect::capture_counts();
     serde_json::json!({
         "enabled": debugging(),
         "seconds": seconds,
+        // Framebuffer backdrop captures with an interval, since the start:
+        // taken, and held back by it.
+        "backdrop_captures": {"taken": taken, "held": held},
         "redraw_callers": callers,
         "renders": renders,
         "frames_dropped": dropped,

@@ -966,6 +966,56 @@ struct BackdropFramebufferCache {
     transformed_scratch: Option<GlesTexture>,
     rendered: Option<GlesTexture>,
     sample_src: Option<Rectangle<f64, Buffer>>,
+    /// When and where the last capture was taken (a capture interval).
+    last_capture: Option<(Instant, Rectangle<i32, Physical>)>,
+}
+
+thread_local! {
+    /// Framebuffer captures held back by a capture interval, by element:
+    /// when each is due.
+    static HELD_CAPTURES: RefCell<std::collections::HashMap<Id, Instant>> = RefCell::new(std::collections::HashMap::new());
+}
+
+/// Framebuffer backdrop captures taken and held back since the start.
+static CAPTURES_TAKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CAPTURES_HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// (taken, held back) framebuffer backdrop captures of effects with a
+/// capture interval, since the compositor started.
+pub fn capture_counts() -> (u64, u64) {
+    use std::sync::atomic::Ordering;
+    (CAPTURES_TAKEN.load(Ordering::Relaxed), CAPTURES_HELD.load(Ordering::Relaxed))
+}
+
+/// When the next held-back capture is due: the backend asks for a redraw
+/// then (`ShojiWM::arm_held_backdrop_captures`).
+pub fn next_held_capture() -> Option<Instant> {
+    HELD_CAPTURES.with(|held| {
+        let mut held = held.borrow_mut();
+        // A live element takes its capture on the frame after it is due; one
+        // long overdue belongs to an element gone (its panel closed), which
+        // would otherwise ask for frames for ever.
+        let now = Instant::now();
+        held.retain(|_, due| now.saturating_duration_since(*due) < HELD_CAPTURE_ORPHANED);
+        held.values().min().copied()
+    })
+}
+
+/// How long past due a held capture is kept for its element.
+const HELD_CAPTURE_ORPHANED: Duration = Duration::from_millis(250);
+
+/// Whether `id`'s held-back capture is due (and forget it).
+fn take_due_capture(id: &Id) -> bool {
+    HELD_CAPTURES.with(|held| {
+        let mut held = held.borrow_mut();
+        match held.get(id) {
+            Some(due) if *due <= Instant::now() => {
+                held.remove(id);
+                true
+            }
+            _ => false,
+        }
+    })
 }
 
 /// Per-element render targets for a compiled effect pipeline. Slots are
@@ -1776,6 +1826,12 @@ impl ShaderEffectElementState {
             self.commit_counter.increment();
             self.last_spec = Some(spec.clone());
         }
+        // A capture held back by its interval is due: the element's own
+        // damage makes the frame capture again (once; a capture does not
+        // mark damage itself).
+        if take_due_capture(&self.id) {
+            self.commit_counter.increment();
+        }
 
         // Framebuffer effects run their pipeline with DeferToDisplay (no
         // materialize finish pass), so this display program is the only place
@@ -2094,6 +2150,28 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             RefCell::new(BackdropFramebufferCache::default())
         });
         let mut inner = inner.borrow_mut();
+        // At most once every interval for damage below: within it, the last
+        // capture is drawn again and this one is held until the interval
+        // ends. A new size or place captures at once.
+        if let Some(interval) = self.shader.invalidate.capture_interval() {
+            use std::sync::atomic::Ordering;
+            let now = Instant::now();
+            if let Some((at, last_dst)) = inner.last_capture
+                && last_dst == dst
+                && inner.rendered.is_some()
+                && now.duration_since(at) < interval
+            {
+                let due = at + interval;
+                HELD_CAPTURES.with(|held| {
+                    held.borrow_mut().entry(self.id.clone()).and_modify(|when| *when = (*when).min(due)).or_insert(due);
+                });
+                CAPTURES_HELD.fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            HELD_CAPTURES.with(|held| held.borrow_mut().remove(&self.id));
+            inner.last_capture = Some((now, dst));
+            CAPTURES_TAKEN.fetch_add(1, Ordering::Relaxed);
+        }
         let output_rect = Rectangle::from_size(frame.output_size());
         let padding = self.framebuffer_capture_padding;
         let capture_rect = Rectangle::new(
@@ -4827,6 +4905,7 @@ fn invalidation_sample_rect_for_policy(
             .as_deref()
             .map(|policy| invalidation_sample_rect_for_policy(policy, visible_rect))
             .unwrap_or(visible_rect),
+        EffectInvalidationPolicy::AtMostEvery { base, .. } => invalidation_sample_rect_for_policy(base, visible_rect),
     }
 }
 
@@ -4959,6 +5038,9 @@ fn source_damage_intersects_policy(
                 || base.as_deref().is_some_and(|policy| {
                     source_damage_intersects_policy(policy, visible_rect, source_damage)
                 })
+        }
+        EffectInvalidationPolicy::AtMostEvery { base, .. } => {
+            source_damage_intersects_policy(base, visible_rect, source_damage)
         }
     }
 }
@@ -7125,5 +7207,40 @@ mod frame_rect_tests {
         assert_eq!(pixel(22, 20).1, 0, "left of the clip (x < 25)");
         assert_eq!(pixel(50, 20).1, 255, "inside the clip");
         assert_eq!(pixel(10, 20), (0, 0), "outside the frame");
+    }
+}
+
+#[cfg(test)]
+mod held_capture_tests {
+    use super::*;
+
+    #[test]
+    fn a_held_capture_is_taken_once_when_due_and_an_orphan_is_forgotten() {
+        let (live, gone) = (Id::new(), Id::new());
+        let now = Instant::now();
+        HELD_CAPTURES.with(|held| {
+            let mut held = held.borrow_mut();
+            held.insert(live.clone(), now + Duration::from_millis(40));
+            held.insert(gone.clone(), now - Duration::from_secs(1));
+        });
+        // The one long overdue (its element gone) is dropped; the live one
+        // is next.
+        assert_eq!(next_held_capture(), Some(now + Duration::from_millis(40)));
+        assert!(!take_due_capture(&live), "not due yet");
+        HELD_CAPTURES.with(|held| held.borrow_mut().insert(live.clone(), now));
+        assert!(take_due_capture(&live), "due: the element captures again");
+        assert!(!take_due_capture(&live), "and only once");
+        assert_eq!(next_held_capture(), None);
+    }
+
+    #[test]
+    fn only_an_interval_limits_captures() {
+        let base = EffectInvalidationPolicy::OnSourceDamageBox { damage_padding: 20 };
+        assert_eq!(base.capture_interval(), None);
+        let limited = EffectInvalidationPolicy::AtMostEvery { min_interval_ms: 50, base: Box::new(base.clone()) };
+        assert_eq!(limited.capture_interval(), Some(Duration::from_millis(50)));
+        // Its sampling is its base's.
+        let rect = Rectangle::new(Point::from((10, 10)), (100, 50).into());
+        assert_eq!(invalidation_sample_rect_for_policy(&limited, rect), invalidation_sample_rect_for_policy(&base, rect));
     }
 }

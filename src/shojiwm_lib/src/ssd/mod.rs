@@ -1142,6 +1142,25 @@ pub enum EffectInvalidationPolicy {
         dirty_when: bool,
         base: Option<Box<EffectInvalidationPolicy>>,
     },
+    /// `base`, but a framebuffer backdrop (`backdropSource()` drawn straight
+    /// from the frame) captures again at most once every `min_interval_ms`
+    /// for damage below it; a capture held back is taken when the interval
+    /// ends (`shader_effect::next_held_capture`). A new size or place
+    /// captures at once.
+    AtMostEvery {
+        min_interval_ms: u32,
+        base: Box<EffectInvalidationPolicy>,
+    },
+}
+
+impl EffectInvalidationPolicy {
+    /// The least time between two framebuffer captures, if limited.
+    pub fn capture_interval(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::AtMostEvery { min_interval_ms, .. } => Some(std::time::Duration::from_millis(u64::from(*min_interval_ms))),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1228,6 +1228,33 @@ impl ShojiWM {
     ) {
         self.signal_post_repaint_barriers(output);
         self.send_frame_callbacks_for_output(output, time, None);
+        self.arm_held_backdrop_captures();
+    }
+
+    /// A framebuffer backdrop's capture held back by its interval is taken
+    /// when the interval ends: a redraw then (one timer, the earliest due).
+    pub fn arm_held_backdrop_captures(&mut self) {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        let Some(due) = crate::backend::shader_effect::next_held_capture() else {
+            return;
+        };
+        if HELD_CAPTURE_TIMER.with(|armed| armed.get().is_some_and(|armed| armed <= due)) {
+            return;
+        }
+        HELD_CAPTURE_TIMER.with(|armed| armed.set(Some(due)));
+        let delay = due.saturating_duration_since(std::time::Instant::now());
+        let result = self.loop_handle.insert_source(Timer::from_duration(delay), move |_, _, state| {
+            HELD_CAPTURE_TIMER.with(|armed| {
+                if armed.get() == Some(due) {
+                    armed.set(None);
+                }
+            });
+            state.schedule_redraw();
+            TimeoutAction::Drop
+        });
+        if let Err(error) = result {
+            tracing::debug!(?error, "failed to arm the held backdrop capture timer");
+        }
     }
 
     pub fn post_repaint_with_sequence(
@@ -1239,7 +1266,13 @@ impl ShojiWM {
     ) {
         self.signal_post_repaint_barriers(output);
         self.send_frame_callbacks_for_output(output, time, frame_callback_sequence);
+        self.arm_held_backdrop_captures();
     }
+}
+
+thread_local! {
+    /// When the held backdrop capture timer fires, while one is armed.
+    static HELD_CAPTURE_TIMER: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]

@@ -273,6 +273,7 @@ fn invalidated(policy: &EffectInvalidationPolicy, source_changed: bool) -> bool 
         EffectInvalidationPolicy::OnSourceDamageBox { .. } => source_changed,
         EffectInvalidationPolicy::Manual { dirty_when, base } =>
             *dirty_when || base.as_deref().is_some_and(|base| invalidated(base, source_changed)),
+        EffectInvalidationPolicy::AtMostEvery { base, .. } => invalidated(base, source_changed),
     }
 }
 

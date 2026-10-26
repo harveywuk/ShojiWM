@@ -359,6 +359,13 @@ impl Invalidate {
         Self(EffectInvalidationPolicy::Always)
     }
 
+    /// `base`, re-run at most once every `min_interval_ms` for damage below
+    /// a framebuffer backdrop (a capture held back is taken when the
+    /// interval ends).
+    pub fn at_most_every(min_interval_ms: u32, base: Invalidate) -> Self {
+        Self(EffectInvalidationPolicy::AtMostEvery { min_interval_ms, base: Box::new(base.0) })
+    }
+
     /// Re-run only while `dirty_when` is set, on top of `base`.
     pub fn manual(dirty_when: bool, base: Option<Invalidate>) -> Self {
         Self(EffectInvalidationPolicy::Manual {
